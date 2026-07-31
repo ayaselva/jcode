@@ -830,6 +830,18 @@ pub fn load_agents_md_files_from_dir(working_dir: Option<&Path>) -> (Option<Stri
         }
     };
 
+    // Home directory files first. These are the user's central baseline and must
+    // appear before project-specific AGENTS.md so the project file can add local
+    // details without hiding the global operating rules.
+    if let Ok(global_agents_md) = crate::storage::user_home_path("AGENTS.md")
+        && let Some((content, size)) =
+            load_file(&global_agents_md, "Global Instructions (~/AGENTS.md)")
+    {
+        info.has_global_agents_md = true;
+        info.global_agents_md_chars = size;
+        contents.push(content);
+    }
+
     // Project-level files (from specified working directory or current directory)
     let project_dir = working_dir.unwrap_or(Path::new("."));
     if let Some((content, size)) = load_file(
@@ -838,16 +850,6 @@ pub fn load_agents_md_files_from_dir(working_dir: Option<&Path>) -> (Option<Stri
     ) {
         info.has_project_agents_md = true;
         info.project_agents_md_chars = size;
-        contents.push(content);
-    }
-
-    // Home directory files
-    if let Ok(global_agents_md) = crate::storage::user_home_path("AGENTS.md")
-        && let Some((content, size)) =
-            load_file(&global_agents_md, "Global Instructions (~/AGENTS.md)")
-    {
-        info.has_global_agents_md = true;
-        info.global_agents_md_chars = size;
         contents.push(content);
     }
 

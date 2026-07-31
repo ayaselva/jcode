@@ -78,13 +78,22 @@ fn test_load_agents_md_files_uses_sandboxed_global_files() {
     .unwrap();
 
     let project_dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(project_dir.path().join("AGENTS.md"), "project agents instructions").unwrap();
     let (content, info) = load_agents_md_files_from_dir(Some(project_dir.path()));
 
     assert!(info.has_global_agents_md);
-    let content = content.expect("global instructions content");
+    assert!(info.has_project_agents_md);
+    let content = content.expect("global and project instructions content");
     assert!(content.contains("# Global Instructions (~/AGENTS.md)"));
+    assert!(content.contains("# Project Instructions (AGENTS.md)"));
+    assert!(
+        content.find("# Global Instructions (~/AGENTS.md)").unwrap()
+            < content.find("# Project Instructions (AGENTS.md)").unwrap(),
+        "global ~/AGENTS.md must be loaded before project AGENTS.md"
+    );
     assert!(!content.contains("~/.AGENTS.md"));
     assert!(content.contains("sandboxed global agents instructions"));
+    assert!(content.contains("project agents instructions"));
 
     if let Some(prev_home) = prev_home {
         crate::env::set_var("JCODE_HOME", prev_home);
