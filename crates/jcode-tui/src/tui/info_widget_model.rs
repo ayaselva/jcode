@@ -363,7 +363,10 @@ fn short_reasoning_effort(effort: &str) -> Option<&str> {
 
 fn short_service_tier(service_tier: &str) -> Option<&str> {
     let service_tier = service_tier.trim();
-    if service_tier.is_empty() || service_tier == "off" || service_tier == "default" {
+    if matches!(
+        service_tier,
+        "" | "off" | "default" | "auto" | "none" | "standard"
+    ) {
         return None;
     }
     Some(match service_tier {
@@ -445,5 +448,20 @@ mod tests {
         assert!(independent.contains("[fast]"));
         assert!(overview.contains("(hi)"));
         assert!(overview.contains("[fast]"));
+    }
+
+    #[test]
+    fn model_widget_hides_standard_openai_service_tier_metadata() {
+        let rect = Rect::new(0, 0, 40, 8);
+        let mut data = data();
+        data.service_tier = Some("auto".to_string());
+
+        let independent = first_line_text(render_model_widget(&data, rect));
+        let overview = first_line_text(render_model_info(&data, rect));
+
+        assert!(independent.contains("(hi)"));
+        assert!(!independent.contains("[fast]"));
+        assert!(overview.contains("(hi)"));
+        assert!(!overview.contains("[fast]"));
     }
 }
