@@ -769,10 +769,7 @@ async fn handle_remote_key_internal(
         }
     }
 
-    if code == KeyCode::Enter
-        && modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
-        && !app.input.trim().starts_with('/')
-    {
+    if code == KeyCode::Enter && modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) {
         if app.activate_picker_from_preview() {
             return Ok(());
         }
@@ -780,12 +777,18 @@ async fn handle_remote_key_internal(
         if !app.input.is_empty() {
             let prepared = input::take_prepared_input(app);
 
+            if prepared.expanded.trim().starts_with('/') {
+                submit_remote_slash_input(app, remote, prepared).await?;
+                return Ok(());
+            }
+
             if app.route_next_prompt_to_new_session {
                 route_prepared_input_to_new_remote_session(app, remote, prepared).await?;
                 return Ok(());
             }
 
-            match app.send_action(true) {
+            let alternate_shortcut = !crate::config::config().keybindings.enter_inserts_newline;
+            match app.send_action(alternate_shortcut) {
                 SendAction::Submit => submit_prepared_remote_input(app, remote, prepared).await?,
                 SendAction::Queue => {
                     app.queued_messages.push(prepared.expanded);

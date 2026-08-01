@@ -187,7 +187,7 @@ fn default_message_alignment(role: &str, centered: bool) -> ratatui::layout::Ali
     if centered
         && !matches!(
             role,
-            "tool" | "system" | "swarm" | "background_task" | "overnight" | "todos"
+            "user" | "tool" | "system" | "swarm" | "background_task" | "overnight" | "todos"
         )
     {
         ratatui::layout::Alignment::Center

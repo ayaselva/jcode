@@ -1,5 +1,22 @@
 use super::*;
 
+struct EnterInsertsNewlineEnvGuard;
+
+impl EnterInsertsNewlineEnvGuard {
+    fn enable() -> Self {
+        crate::env::set_var("JCODE_ENTER_INSERTS_NEWLINE", "1");
+        crate::config::invalidate_config_cache();
+        Self
+    }
+}
+
+impl Drop for EnterInsertsNewlineEnvGuard {
+    fn drop(&mut self) {
+        crate::env::remove_var("JCODE_ENTER_INSERTS_NEWLINE");
+        crate::config::invalidate_config_cache();
+    }
+}
+
 #[test]
 fn test_disconnected_key_handler_allows_typing_and_queueing() {
     let mut app = create_test_app();
@@ -341,6 +358,29 @@ fn test_remote_cmd_enter_queues_while_processing() {
     rt.block_on(app.handle_remote_key(KeyCode::Char('i'), KeyModifiers::empty(), &mut remote))
         .unwrap();
     rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::SUPER, &mut remote))
+        .unwrap();
+
+    assert!(app.input().is_empty());
+    assert_eq!(app.queued_messages().len(), 1);
+    assert_eq!(app.queued_messages()[0], "hi");
+}
+
+#[test]
+fn test_remote_swapped_ctrl_enter_uses_regular_submit_action() {
+    let _env_lock = crate::storage::lock_test_env();
+    let _enter_guard = EnterInsertsNewlineEnvGuard::enable();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _runtime_guard = rt.enter();
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.queue_mode = true;
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('h'), KeyModifiers::empty(), &mut remote))
+        .unwrap();
+    rt.block_on(app.handle_remote_key(KeyCode::Char('i'), KeyModifiers::empty(), &mut remote))
+        .unwrap();
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::CONTROL, &mut remote))
         .unwrap();
 
     assert!(app.input().is_empty());
