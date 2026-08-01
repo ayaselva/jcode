@@ -2046,6 +2046,24 @@ fn test_swapped_enter_plain_enter_inserts_newline_and_ctrl_enter_submits() {
 }
 
 #[test]
+fn test_swapped_enter_legacy_foot_ctrl_enter_submits() {
+    let _env_lock = crate::storage::lock_test_env();
+    let _guard = EnterInsertsNewlineEnvGuard::enable();
+    let mut app = create_test_app();
+
+    for c in "legacy-foot-submit".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+            .unwrap();
+    }
+    app.handle_key(KeyCode::F(1), KeyModifiers::SHIFT).unwrap();
+
+    assert!(
+        app.input().is_empty(),
+        "Foot's legacy Shift+F1 sequence must submit like Ctrl+Enter"
+    );
+}
+
+#[test]
 fn test_swapped_enter_keeps_slash_commands_on_plain_enter() {
     let _env_lock = crate::storage::lock_test_env();
     let _guard = EnterInsertsNewlineEnvGuard::enable();

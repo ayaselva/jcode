@@ -3,7 +3,7 @@
 use super::{
     App, ContentBlock, DisplayMessage, Message, ProcessingStatus, Role, SendAction, commands,
     ctrl_bracket_fallback_to_esc, is_context_limit_error, is_request_payload_too_large_error,
-    remote,
+    legacy_ctrl_enter_fallback, remote,
 };
 use crate::bus::{
     Bus, BusEvent, ClipboardPasteCompleted, ClipboardPasteContent, ClipboardPasteKind,
@@ -2730,6 +2730,7 @@ impl App {
         let mut code = code;
         let mut modifiers = modifiers;
         ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
+        legacy_ctrl_enter_fallback(&mut code, &mut modifiers);
 
         // Alt+5 always starts the onboarding simulator from a pristine first
         // screen, even when another modal or a previous sim screen is active.

@@ -103,6 +103,18 @@ fn test_disconnected_ctrl_enter_queues_for_reconnect() {
 }
 
 #[test]
+fn test_disconnected_legacy_foot_ctrl_enter_queues_for_reconnect() {
+    let mut app = create_test_app();
+
+    remote::handle_disconnected_key(&mut app, KeyCode::Char('h'), KeyModifiers::empty()).unwrap();
+    remote::handle_disconnected_key(&mut app, KeyCode::Char('i'), KeyModifiers::empty()).unwrap();
+    remote::handle_disconnected_key(&mut app, KeyCode::F(1), KeyModifiers::SHIFT).unwrap();
+
+    assert!(app.input.is_empty());
+    assert_eq!(app.queued_messages(), &["hi"]);
+}
+
+#[test]
 fn test_disconnected_cmd_enter_queues_for_reconnect() {
     let mut app = create_test_app();
 
@@ -387,4 +399,3 @@ fn test_remote_swapped_ctrl_enter_uses_regular_submit_action() {
     assert_eq!(app.queued_messages().len(), 1);
     assert_eq!(app.queued_messages()[0], "hi");
 }
-

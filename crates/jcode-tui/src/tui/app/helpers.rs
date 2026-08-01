@@ -216,6 +216,19 @@ pub(super) fn ctrl_bracket_fallback_to_esc(code: &mut KeyCode, modifiers: &mut K
 #[cfg(not(target_os = "macos"))]
 pub(super) fn ctrl_bracket_fallback_to_esc(_code: &mut KeyCode, _modifiers: &mut KeyModifiers) {}
 
+/// Normalize the legacy Foot Ctrl+Enter text binding to a real Ctrl+Enter.
+///
+/// Foot's `ESC [ 1 ; 2 P` sequence is decoded by crossterm as Shift+F1. Older
+/// terminal configurations used that sequence to keep Ctrl+Enter distinct
+/// from Enter, so accept the exact chord as a compatibility fallback while
+/// newer terminals send Kitty CSI-u directly.
+pub(super) fn legacy_ctrl_enter_fallback(code: &mut KeyCode, modifiers: &mut KeyModifiers) {
+    if *code == KeyCode::F(1) && *modifiers == KeyModifiers::SHIFT {
+        *code = KeyCode::Enter;
+        *modifiers = KeyModifiers::CONTROL;
+    }
+}
+
 /// Debug command file path
 pub(super) fn debug_cmd_path() -> PathBuf {
     if let Ok(path) = std::env::var("JCODE_DEBUG_CMD_PATH") {

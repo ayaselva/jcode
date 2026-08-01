@@ -2,8 +2,9 @@
 
 use super::{
     App, DisplayMessage, PendingReloadReconnectStatus, ProcessingStatus, RemoteResumeActivity,
-    SendAction, ctrl_bracket_fallback_to_esc, input, parse_rate_limit_error,
-    remote_notifications::present_swarm_notification, spawn_in_new_terminal,
+    SendAction, ctrl_bracket_fallback_to_esc, input, legacy_ctrl_enter_fallback,
+    parse_rate_limit_error, remote_notifications::present_swarm_notification,
+    spawn_in_new_terminal,
 };
 use crate::bus::BusEvent;
 use crate::message::ToolCall;
@@ -1822,6 +1823,7 @@ fn handle_disconnected_key_internal(
     let mut code = code;
     let mut modifiers = modifiers;
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
+    legacy_ctrl_enter_fallback(&mut code, &mut modifiers);
 
     if input::handle_navigation_shortcuts(app, code, modifiers) {
         return Ok(());

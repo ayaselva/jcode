@@ -157,6 +157,20 @@ fn bare_carriage_return_decodes_without_shift() {
 }
 
 #[test]
+#[cfg(unix)]
+fn legacy_foot_ctrl_enter_sequence_decodes_to_shift_f1() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let Some((code, bits)) = decode_key_event_via_pty(b"\x1b[1;2P") else {
+        eprintln!("skipping: pty decode unavailable in this environment");
+        return;
+    };
+
+    assert_eq!(code, KeyCode::F(1));
+    assert_eq!(KeyModifiers::from_bits_truncate(bits), KeyModifiers::SHIFT);
+}
+
+#[test]
 fn decoded_shift_enter_inserts_a_newline_instead_of_submitting() {
     use crossterm::event::{KeyCode, KeyModifiers};
 
