@@ -2842,11 +2842,17 @@ impl App {
             return Ok(());
         }
 
-        // Ctrl+Enter / Cmd+Enter: does opposite of queue_mode during processing
+        // Ctrl+Enter / Cmd+Enter: does opposite of queue_mode during processing.
+        // With keybindings.enter_inserts_newline the roles swap: Ctrl+Enter is
+        // the regular submit and plain Enter inserts a newline.
         if code == KeyCode::Enter
             && modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
         {
-            handle_alternate_enter(self);
+            if crate::config::config().keybindings.enter_inserts_newline {
+                handle_enter(self);
+            } else {
+                handle_alternate_enter(self);
+            }
             return Ok(());
         }
 

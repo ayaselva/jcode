@@ -101,6 +101,10 @@ swarm_panel_focus = "alt+n"
 # By default Enter resumes in this terminal; Ctrl+Enter performs the alternate action.
 session_picker_enter = "current-terminal"
 
+# Swap composer submit keys: plain Enter inserts a newline and Ctrl+Enter
+# (or Cmd+Enter) submits. Single-line /commands still run on Enter.
+# enter_inserts_newline = false
+
 [dictation]
 # External speech-to-text command.
 # The command should record/transcribe speech and print the final transcript to stdout.

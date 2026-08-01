@@ -83,6 +83,10 @@ impl Config {
         if let Ok(v) = std::env::var("JCODE_NEW_TERMINAL_KEY") {
             self.keybindings.new_terminal = v;
         }
+        if let Ok(v) = std::env::var("JCODE_ENTER_INSERTS_NEWLINE") {
+            self.keybindings.enter_inserts_newline =
+                matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on");
+        }
 
         // Dictation
         if let Ok(v) = std::env::var("JCODE_DICTATION_COMMAND") {

@@ -33,7 +33,32 @@ pub(in crate::tui::app) fn enter_inserts_newline(
         insert_input_text(app, "\n");
         return true;
     }
+    // Opt-in swapped layout: plain Enter is a newline, Ctrl/Cmd+Enter submits.
+    // Picker previews and single-line slash commands keep Enter as their
+    // confirm key, and an empty draft ignores Enter rather than accumulating
+    // blank lines.
+    if crate::config::config().keybindings.enter_inserts_newline
+        && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
+        && !app
+            .inline_interactive_state
+            .as_ref()
+            .map(|p| p.preview)
+            .unwrap_or(false)
+        && !is_single_line_slash_command(&app.input)
+    {
+        if app.input.is_empty() {
+            return true;
+        }
+        insert_input_text(app, "\n");
+        return true;
+    }
     consume_backslash_continuation(app)
+}
+
+/// A one-line draft starting with `/` is a command; Enter should run it even
+/// in the swapped-Enter layout, matching how pickers keep Enter as confirm.
+fn is_single_line_slash_command(input: &str) -> bool {
+    input.trim_start().starts_with('/') && !input.contains('\n')
 }
 
 /// A trailing backslash at the cursor turns Enter into a newline.

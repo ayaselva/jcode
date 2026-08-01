@@ -1365,6 +1365,10 @@ fn test_alt_enter_inserts_newline() {
 }
 #[test]
 fn test_ctrl_enter_opposite_send_mode() {
+    // Serialize against the swapped-Enter tests below: their
+    // JCODE_ENTER_INSERTS_NEWLINE override is process-global and would turn
+    // this test's Ctrl+Enter into a plain submit.
+    let _env_lock = crate::storage::lock_test_env();
     let mut app = create_test_app();
     app.is_processing = true;
 
@@ -1995,4 +1999,80 @@ fn test_catalog_update_rebuilds_open_model_picker_with_real_routes() {
             "rebuilt picker should expose the real route"
         );
     });
+}
+
+/// RAII guard for the JCODE_ENTER_INSERTS_NEWLINE override used by the
+/// swapped-Enter tests. Forces a config reload on enable and drop so the
+/// override neither misses the cache window nor leaks into sibling tests.
+struct EnterInsertsNewlineEnvGuard;
+
+impl EnterInsertsNewlineEnvGuard {
+    fn enable() -> Self {
+        crate::env::set_var("JCODE_ENTER_INSERTS_NEWLINE", "1");
+        crate::config::invalidate_config_cache();
+        Self
+    }
+}
+
+impl Drop for EnterInsertsNewlineEnvGuard {
+    fn drop(&mut self) {
+        crate::env::remove_var("JCODE_ENTER_INSERTS_NEWLINE");
+        crate::config::invalidate_config_cache();
+    }
+}
+
+#[test]
+fn test_swapped_enter_plain_enter_inserts_newline_and_ctrl_enter_submits() {
+    let _env_lock = crate::storage::lock_test_env();
+    let _guard = EnterInsertsNewlineEnvGuard::enable();
+    let mut app = create_test_app();
+
+    app.handle_key(KeyCode::Char('h'), KeyModifiers::empty())
+        .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty()).unwrap();
+    app.handle_key(KeyCode::Char('i'), KeyModifiers::empty())
+        .unwrap();
+
+    assert_eq!(app.input(), "h\ni", "plain Enter must insert a newline");
+
+    // Ctrl+Enter is the submit chord in the swapped layout: the draft leaves
+    // the composer (queued because this test app has no live session).
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(
+        app.input().is_empty(),
+        "Ctrl+Enter must submit (clear) the draft"
+    );
+}
+
+#[test]
+fn test_swapped_enter_keeps_slash_commands_on_plain_enter() {
+    let _env_lock = crate::storage::lock_test_env();
+    let _guard = EnterInsertsNewlineEnvGuard::enable();
+    let mut app = create_test_app();
+
+    for c in "/help".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+            .unwrap();
+    }
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty()).unwrap();
+
+    assert!(
+        app.input().is_empty(),
+        "single-line slash command must still run on plain Enter"
+    );
+}
+
+#[test]
+fn test_swapped_enter_ignores_enter_on_empty_draft() {
+    let _env_lock = crate::storage::lock_test_env();
+    let _guard = EnterInsertsNewlineEnvGuard::enable();
+    let mut app = create_test_app();
+
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty()).unwrap();
+
+    assert!(
+        app.input().is_empty(),
+        "Enter on an empty draft must not accumulate blank lines"
+    );
 }

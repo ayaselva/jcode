@@ -934,6 +934,10 @@ pub struct KeybindingsConfig {
     /// Session picker Enter action: "current-terminal" (default) or "new-terminal".
     /// Ctrl+Enter performs the alternate action.
     pub session_picker_enter: SessionPickerResumeAction,
+    /// Swap composer submit keys: plain Enter inserts a newline and
+    /// Ctrl+Enter (or Cmd+Enter) submits (default: false). Shift+Enter,
+    /// Alt+Enter, and the trailing-backslash fallback keep inserting newlines.
+    pub enter_inserts_newline: bool,
 }
 
 impl Default for KeybindingsConfig {
@@ -983,6 +987,7 @@ impl Default for KeybindingsConfig {
                 },
             ),
             session_picker_enter: SessionPickerResumeAction::CurrentTerminal,
+            enter_inserts_newline: false,
         }
     }
 }
