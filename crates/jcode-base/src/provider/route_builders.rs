@@ -17,6 +17,16 @@ pub fn is_listable_model_name(model: &str) -> bool {
 /// so it won't drop a legitimately named chat model.
 pub fn model_name_is_likely_non_chat(model: &str) -> bool {
     let lower = model.to_ascii_lowercase();
+    // These OpenRouter models use the chat-completions surface even though
+    // their ids contain markers that normally identify non-chat catalog
+    // entries. Keep the exception exact so broad provider catalogs still
+    // filter image-generation and guard models by default.
+    if matches!(
+        lower.as_str(),
+        "google/gemini-2.5-flash-image" | "openai/gpt-oss-safeguard-20b"
+    ) {
+        return false;
+    }
     // Strip any provider/path prefix so "01-ai/yi-large" -> matches on the full
     // string but boundary tokens still work across '/', '.', '-', '_' and ':'.
     let tokens: Vec<&str> = lower
@@ -268,6 +278,8 @@ mod listable_tests {
             "anthropic/claude-opus-4.8",
             "deepseek-chat",
             "kimi-k2",
+            "google/gemini-2.5-flash-image",
+            "openai/gpt-oss-safeguard-20b",
         ] {
             assert!(
                 is_listable_model_name(model),
