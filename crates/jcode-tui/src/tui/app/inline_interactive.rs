@@ -23,6 +23,54 @@ use helpers::{
     save_agent_model_override,
 };
 
+fn collapse_duplicate_model_picker_entries(entries: Vec<PickerEntry>) -> Vec<PickerEntry> {
+    let mut collapsed: Vec<PickerEntry> = Vec::with_capacity(entries.len());
+    let mut seen: HashMap<(String, Option<String>, String), usize> = HashMap::new();
+
+    for mut entry in entries {
+        let Some(route) = entry.active_option() else {
+            collapsed.push(entry);
+            continue;
+        };
+        if entry.action != PickerAction::Model {
+            collapsed.push(entry);
+            continue;
+        }
+
+        let key = (
+            entry.name.clone(),
+            entry.effort.clone(),
+            route.api_method.clone(),
+        );
+        if let Some(existing_idx) = seen.get(&key).copied() {
+            let existing = &mut collapsed[existing_idx];
+            for option in entry.options.drain(..) {
+                if !existing.options.iter().any(|existing_option| {
+                    existing_option.provider == option.provider
+                        && existing_option.api_method == option.api_method
+                        && existing_option.detail == option.detail
+                }) {
+                    existing.options.push(option);
+                }
+            }
+            existing.is_current |= entry.is_current;
+            existing.is_default |= entry.is_default;
+            existing.is_favorite |= entry.is_favorite;
+            existing.recommended |= entry.recommended;
+            existing.usage_score = existing.usage_score.max(entry.usage_score);
+            existing.old &= entry.old;
+            if existing.created_date.is_none() {
+                existing.created_date = entry.created_date;
+            }
+        } else {
+            seen.insert(key, collapsed.len());
+            collapsed.push(entry);
+        }
+    }
+
+    collapsed
+}
+
 const REMOTE_MODEL_CATALOG_CACHE_FILE: &str = "remote_model_catalog_cache.json";
 const REMOTE_MODEL_CATALOG_CACHE_VERSION: u8 = 3;
 const REMOTE_MODEL_CATALOG_CACHE_MAX_AGE_SECS: u64 = 24 * 60 * 60;
@@ -1688,6 +1736,8 @@ impl App {
                 }
             }
         }
+
+        let mut entries = collapse_duplicate_model_picker_entries(entries);
 
         entries.sort_by(|a, b| {
             let a_current = if a.is_current { 0u8 } else { 1 };
@@ -3655,12 +3705,13 @@ mod tests {
     use super::{
         REMOTE_MODEL_CATALOG_CACHE_MAX_AGE_SECS, REMOTE_MODEL_CATALOG_CACHE_VERSION,
         REMOTE_MODEL_CATALOG_MAX_DETAIL_BYTES, RemoteModelCatalogCache,
-        filter_routes_by_provider_allowlist, key_char_eq_ignore_ascii_case,
-        model_picker_effort_matches_default, model_picker_recommendation_rank,
-        model_picker_route_is_current, model_picker_route_is_default,
-        model_picker_route_is_recommended, picker_is_runtime_model_picker,
-        remote_model_catalog_cache_is_fresh, remote_model_catalog_cache_origin,
-        remote_model_catalog_snapshot_is_safe, route_supports_reasoning_effort,
+        collapse_duplicate_model_picker_entries, filter_routes_by_provider_allowlist,
+        key_char_eq_ignore_ascii_case, model_picker_effort_matches_default,
+        model_picker_recommendation_rank, model_picker_route_is_current,
+        model_picker_route_is_default, model_picker_route_is_recommended,
+        picker_is_runtime_model_picker, remote_model_catalog_cache_is_fresh,
+        remote_model_catalog_cache_origin, remote_model_catalog_snapshot_is_safe,
+        route_supports_reasoning_effort,
     };
     use crate::tui::{
         AgentModelTarget, App, InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
@@ -3698,6 +3749,29 @@ mod tests {
 
     fn picker_option(provider: &str) -> PickerOption {
         picker_option_with_method(provider, "test")
+    }
+
+    #[test]
+    fn model_picker_collapses_duplicate_rows_into_route_options() {
+        let mut generic = picker_entry("aion-labs/aion-3.0", "OpenRouter", 10);
+        generic.options[0].api_method = "openrouter".to_string();
+        let mut pinned = picker_entry("aion-labs/aion-3.0", "OpenRouter/AionLabs", 25);
+        pinned.options[0].api_method = "openrouter".to_string();
+        pinned.is_current = true;
+
+        let collapsed = collapse_duplicate_model_picker_entries(vec![generic, pinned]);
+
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].name, "aion-labs/aion-3.0");
+        assert_eq!(collapsed[0].options.len(), 2);
+        assert!(collapsed[0].is_current);
+        assert_eq!(collapsed[0].usage_score, 25);
+        assert!(
+            collapsed[0]
+                .options
+                .iter()
+                .any(|option| option.provider == "OpenRouter/AionLabs")
+        );
     }
 
     #[test]
