@@ -209,6 +209,14 @@ struct OpenRouterRouteStats {
     scheduled_endpoint_refreshes: usize,
 }
 
+fn openrouter_model_is_openai(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().starts_with("openai/")
+}
+
+fn openrouter_endpoint_is_openai(endpoint: &openrouter::EndpointInfo) -> bool {
+    endpoint.provider_name.trim().eq_ignore_ascii_case("OpenAI")
+}
+
 /// Build the full multi-provider route catalog.
 ///
 /// Orchestration only: each provider family contributes routes through its
@@ -627,7 +635,20 @@ fn append_openrouter_routes(
     let current_openrouter_model = openrouter.model();
     let supports_openrouter_provider_features = openrouter.supports_provider_routing_features();
     let mut scheduled_endpoint_refreshes = 0usize;
-    for model in openrouter.available_models_display() {
+    let mut display_models = openrouter.available_models_display();
+    if !display_models
+        .iter()
+        .any(|model| model == jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL)
+    {
+        display_models.insert(
+            0,
+            jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL.to_string(),
+        );
+    }
+    for model in display_models {
+        if openrouter_model_is_openai(&model) {
+            continue;
+        }
         stats.models += 1;
         let cached = if supports_openrouter_provider_features {
             openrouter::load_endpoints_disk_cache_public(&model)
@@ -699,6 +720,9 @@ fn append_openrouter_routes(
             stats.endpoint_cache_hits += 1;
             let stale_suffix = age_str.as_deref().unwrap_or("");
             for ep in endpoints {
+                if openrouter_endpoint_is_openai(ep) {
+                    continue;
+                }
                 stats.endpoint_routes += 1;
                 routes.push(build_openrouter_endpoint_route(
                     &model,
@@ -725,7 +749,7 @@ fn append_openrouter_routes(
     }
 }
 
-/// Claude/OpenAI models reachable via OpenRouter as alternative routes.
+/// Claude models reachable via OpenRouter as alternative routes.
 fn append_openrouter_alternative_routes(
     routes: &mut Vec<ModelRoute>,
     stats: &mut OpenRouterRouteStats,
@@ -735,6 +759,9 @@ fn append_openrouter_alternative_routes(
         if let Some((endpoints, _)) = openrouter::load_endpoints_disk_cache_public(&or_model) {
             stats.endpoint_cache_hits += 1;
             for ep in &endpoints {
+                if openrouter_endpoint_is_openai(ep) {
+                    continue;
+                }
                 stats.endpoint_routes += 1;
                 routes.push(build_openrouter_endpoint_route(&model, ep, true, None));
             }
@@ -743,24 +770,6 @@ fn append_openrouter_alternative_routes(
                 &model,
                 &or_model,
                 "Anthropic",
-            ));
-        }
-    }
-
-    for model in ALL_OPENAI_MODELS {
-        let or_model = format!("openai/{}", model);
-        if let Some((endpoints, _)) = openrouter::load_endpoints_disk_cache_public(&or_model) {
-            stats.endpoint_cache_hits += 1;
-            for ep in &endpoints {
-                stats.endpoint_routes += 1;
-                routes.push(build_openrouter_endpoint_route(model, ep, true, None));
-            }
-        } else if openrouter::standard_catalog_lists_model(&or_model) != Some(false) {
-            // Skip fallback routes for models OpenRouter definitively does not
-            // serve (e.g. openai/gpt-5.3-codex-spark) so the picker never
-            // offers a route that would 400 at request time.
-            routes.push(build_openrouter_fallback_provider_route(
-                model, &or_model, "OpenAI",
             ));
         }
     }
@@ -890,6 +899,9 @@ pub fn remote_model_routes_fallback(
         }
 
         if model.contains('/') {
+            if openrouter_model_is_openai(model) {
+                continue;
+            }
             let cached = openrouter_cached;
             let auto_detail = cached
                 .as_ref()
@@ -909,6 +921,9 @@ pub fn remote_model_routes_fallback(
                     format!("{}d ago", age / 86400)
                 };
                 for ep in &endpoints {
+                    if openrouter_endpoint_is_openai(ep) {
+                        continue;
+                    }
                     routes.push(build_openrouter_endpoint_route(
                         model,
                         ep,
@@ -970,13 +985,18 @@ pub fn remote_model_routes_fallback(
             added_any = true;
         }
 
-        if auth.openrouter != AuthState::NotConfigured {
+        if auth.openrouter != AuthState::NotConfigured
+            && provider_for_model(model) != Some("openai")
+        {
             let catalog_lists_model = openrouter_catalog_model
                 .as_deref()
                 .and_then(openrouter::standard_catalog_lists_model);
             match (provider_for_model(model), openrouter_cached.as_ref()) {
                 (_, Some((endpoints, _age))) => {
                     for ep in endpoints {
+                        if openrouter_endpoint_is_openai(ep) {
+                            continue;
+                        }
                         routes.push(build_openrouter_endpoint_route(model, ep, true, None));
                     }
                     added_any = true;
@@ -988,14 +1008,6 @@ pub fn remote_model_routes_fallback(
                         model,
                         openrouter_catalog_model.as_deref().unwrap_or(model),
                         "Anthropic",
-                    ));
-                    added_any = true;
-                }
-                (Some("openai"), None) if catalog_lists_model != Some(false) => {
-                    routes.push(build_openrouter_fallback_provider_route(
-                        model,
-                        openrouter_catalog_model.as_deref().unwrap_or(model),
-                        "OpenAI",
                     ));
                     added_any = true;
                 }
@@ -1456,66 +1468,27 @@ mod tests {
         assert!(remote_openai_compatible_route_for_model("qwen3.6-plus").is_none());
     }
 
-    fn save_openrouter_catalog_cache(model_ids: &[&str]) {
-        let jcode_home = std::env::var_os("JCODE_HOME").expect("JCODE_HOME set");
-        let cache_dir = std::path::PathBuf::from(jcode_home).join("cache");
-        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-        let cache = jcode_provider_openrouter::DiskCache {
-            cached_at: jcode_provider_openrouter::current_unix_secs().expect("current unix time"),
-            source_api_base: None,
-            models: model_ids
-                .iter()
-                .map(|id| jcode_provider_openrouter::ModelInfo {
-                    id: (*id).to_string(),
-                    name: String::new(),
-                    context_length: None,
-                    pricing: jcode_provider_openrouter::ModelPricing::default(),
-                    created: None,
-                })
-                .collect(),
-        };
-        std::fs::write(
-            cache_dir.join("openrouter_models.json"),
-            serde_json::to_string(&cache).expect("serialize cache"),
-        )
-        .expect("write cache");
-    }
-
-    /// OpenRouter alternative routes must not be fabricated for models the
-    /// OpenRouter catalog definitively does not list (e.g. the
-    /// ChatGPT-exclusive `gpt-5.3-codex-spark`), while staying optimistic
-    /// when no catalog cache exists yet.
+    /// OpenRouter alternative routes are only for non-OpenAI fallbacks. OpenAI
+    /// models should be reached through OpenAI OAuth/API-key routes instead of
+    /// the user's OpenRouter balance.
     #[test]
-    fn openrouter_alternative_routes_skip_models_absent_from_catalog() {
+    fn openrouter_alternative_routes_do_not_add_openai_routes() {
         let _guard = EnvGuard::new();
 
-        // No catalog cache: optimistic, spark gets a fallback route.
         let mut routes = Vec::new();
         let mut stats = OpenRouterRouteStats::default();
         append_openrouter_alternative_routes(&mut routes, &mut stats);
         assert!(
             routes
                 .iter()
-                .any(|r| r.model == "gpt-5.3-codex-spark" && r.api_method == "openrouter"),
-            "without a catalog cache the fallback route stays optimistic"
+                .any(|r| r.provider == "Anthropic" && r.api_method == "openrouter"),
+            "Anthropic OpenRouter alternatives are still useful fallbacks"
         );
-
-        // Fresh catalog listing codex but not spark: spark route is dropped.
-        save_openrouter_catalog_cache(&["openai/gpt-5.3-codex", "openai/gpt-5.5"]);
-        let mut routes = Vec::new();
-        let mut stats = OpenRouterRouteStats::default();
-        append_openrouter_alternative_routes(&mut routes, &mut stats);
         assert!(
             !routes
                 .iter()
-                .any(|r| r.model == "gpt-5.3-codex-spark" && r.api_method == "openrouter"),
-            "catalog-confirmed-absent model must not get an OpenRouter fallback route"
-        );
-        assert!(
-            routes
-                .iter()
-                .any(|r| r.model == "gpt-5.3-codex" && r.api_method == "openrouter"),
-            "catalog-listed model keeps its OpenRouter fallback route"
+                .any(|r| r.provider == "OpenAI" && r.api_method == "openrouter"),
+            "OpenAI must not be offered via OpenRouter"
         );
     }
 }

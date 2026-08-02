@@ -1072,6 +1072,8 @@ pub fn model_route_provider_matches_key(
     model_route_provider_labels_match(route_provider_label, desired_provider)
 }
 
+pub const OPENROUTER_DEEPSEEK_FLASH_0731_MODEL: &str = "deepseek/deepseek-v4-flash-0731";
+
 pub fn model_route_metadata_is_recommended(
     model: &str,
     provider: &str,
@@ -1083,6 +1085,13 @@ pub fn model_route_metadata_is_recommended(
     }
     let api_method = ModelRouteApiMethod::parse(api_method);
     match model {
+        OPENROUTER_DEEPSEEK_FLASH_0731_MODEL => {
+            matches!(&api_method, ModelRouteApiMethod::OpenRouter)
+                && matches!(
+                    provider.trim().to_ascii_lowercase().as_str(),
+                    "auto" | "deepseek" | "openrouter"
+                )
+        }
         "gpt-5.5" => {
             matches!(&api_method, ModelRouteApiMethod::OpenAIOAuth)
                 && model_route_provider_labels_match(provider, "openai")
@@ -1529,6 +1538,24 @@ mod tests {
             "claude-opus-4-8",
             "Anthropic",
             "openrouter",
+            true
+        ));
+        assert!(model_route_metadata_is_recommended(
+            OPENROUTER_DEEPSEEK_FLASH_0731_MODEL,
+            "auto",
+            "openrouter",
+            true
+        ));
+        assert!(model_route_metadata_is_recommended(
+            OPENROUTER_DEEPSEEK_FLASH_0731_MODEL,
+            "DeepSeek",
+            "openrouter",
+            true
+        ));
+        assert!(!model_route_metadata_is_recommended(
+            OPENROUTER_DEEPSEEK_FLASH_0731_MODEL,
+            "DeepSeek",
+            "openai-compatible:deepseek",
             true
         ));
         assert!(!model_route_metadata_is_recommended(

@@ -370,7 +370,11 @@ fn model_picker_route_is_current(
     jcode_provider_core::model_route_provider_labels_match(&route.provider, current_provider)
 }
 
-const RECOMMENDED_MODELS: &[&str] = &["gpt-5.5", "claude-opus-4-8"];
+const RECOMMENDED_MODELS: &[&str] = &[
+    jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL,
+    "gpt-5.5",
+    "claude-opus-4-8",
+];
 
 fn model_picker_recommendation_rank(name: &str) -> usize {
     RECOMMENDED_MODELS
@@ -3622,11 +3626,11 @@ mod tests {
         REMOTE_MODEL_CATALOG_CACHE_MAX_AGE_SECS, REMOTE_MODEL_CATALOG_CACHE_VERSION,
         REMOTE_MODEL_CATALOG_MAX_DETAIL_BYTES, RemoteModelCatalogCache,
         filter_routes_by_provider_allowlist, key_char_eq_ignore_ascii_case,
-        model_picker_effort_matches_default, model_picker_route_is_current,
-        model_picker_route_is_default, model_picker_route_is_recommended,
-        picker_is_runtime_model_picker, remote_model_catalog_cache_is_fresh,
-        remote_model_catalog_cache_origin, remote_model_catalog_snapshot_is_safe,
-        route_supports_reasoning_effort,
+        model_picker_effort_matches_default, model_picker_recommendation_rank,
+        model_picker_route_is_current, model_picker_route_is_default,
+        model_picker_route_is_recommended, picker_is_runtime_model_picker,
+        remote_model_catalog_cache_is_fresh, remote_model_catalog_cache_origin,
+        remote_model_catalog_snapshot_is_safe, route_supports_reasoning_effort,
     };
     use crate::tui::{
         AgentModelTarget, App, InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
@@ -4004,18 +4008,28 @@ mod tests {
             &copilot_route,
         ));
 
-        // DeepSeek routes are no longer in the recommended set at all.
-        assert!(!model_picker_route_is_recommended(
-            "deepseek/deepseek-v4-pro",
+        assert_eq!(
+            model_picker_recommendation_rank(
+                jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL
+            ),
+            0,
+            "DeepSeek V4 Flash 0731 is the top OpenRouter recommendation"
+        );
+        assert!(model_picker_route_is_recommended(
+            jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL,
             &openrouter_auto_route,
         ));
+        assert!(model_picker_route_is_recommended(
+            jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL,
+            &openrouter_provider_route,
+        ));
         assert!(!model_picker_route_is_recommended(
-            "deepseek/deepseek-v4-pro",
+            jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL,
             &deepseek_direct_route,
         ));
         assert!(!model_picker_route_is_recommended(
             "deepseek/deepseek-v4-pro",
-            &openrouter_provider_route,
+            &openrouter_auto_route,
         ));
     }
 
