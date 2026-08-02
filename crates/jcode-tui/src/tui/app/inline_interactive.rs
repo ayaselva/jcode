@@ -197,6 +197,18 @@ fn filter_routes_by_provider_allowlist(
     }
 }
 
+/// Hide provider routes that the catalog already marked unavailable.
+///
+/// The picker used to keep these rows and render them in a disabled/dark-gray
+/// style. That made stale catalog entries look selectable enough to clutter
+/// `/model`, while choosing them could not succeed. The provider catalog is the
+/// source of truth here, so keep only routes that are currently selectable.
+fn filter_unavailable_model_routes(
+    routes: Vec<crate::provider::ModelRoute>,
+) -> Vec<crate::provider::ModelRoute> {
+    routes.into_iter().filter(|route| route.available).collect()
+}
+
 fn model_picker_usage_key(model_name: &str, route: &PickerOption, effort: Option<&str>) -> String {
     format!(
         "{}\u{1f}{}\u{1f}{}\u{1f}{}",
@@ -1464,6 +1476,7 @@ impl App {
             routes
         };
         let routes = crate::provider::dedupe_model_routes(routes);
+        let routes = filter_unavailable_model_routes(routes);
         let routes = filter_routes_by_provider_allowlist(
             routes,
             config.provider.model_picker_providers.as_deref(),
@@ -3706,12 +3719,12 @@ mod tests {
         REMOTE_MODEL_CATALOG_CACHE_MAX_AGE_SECS, REMOTE_MODEL_CATALOG_CACHE_VERSION,
         REMOTE_MODEL_CATALOG_MAX_DETAIL_BYTES, RemoteModelCatalogCache,
         collapse_duplicate_model_picker_entries, filter_routes_by_provider_allowlist,
-        key_char_eq_ignore_ascii_case, model_picker_effort_matches_default,
-        model_picker_recommendation_rank, model_picker_route_is_current,
-        model_picker_route_is_default, model_picker_route_is_recommended,
-        picker_is_runtime_model_picker, remote_model_catalog_cache_is_fresh,
-        remote_model_catalog_cache_origin, remote_model_catalog_snapshot_is_safe,
-        route_supports_reasoning_effort,
+        filter_unavailable_model_routes, key_char_eq_ignore_ascii_case,
+        model_picker_effort_matches_default, model_picker_recommendation_rank,
+        model_picker_route_is_current, model_picker_route_is_default,
+        model_picker_route_is_recommended, picker_is_runtime_model_picker,
+        remote_model_catalog_cache_is_fresh, remote_model_catalog_cache_origin,
+        remote_model_catalog_snapshot_is_safe, route_supports_reasoning_effort,
     };
     use crate::tui::{
         AgentModelTarget, App, InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
@@ -4322,6 +4335,30 @@ mod tests {
         assert_eq!(
             filter_routes_by_provider_allowlist(routes, Some(&["  ".to_string()]), "x").len(),
             2
+        );
+    }
+
+    #[test]
+    fn model_picker_filters_catalog_unavailable_routes() {
+        let mut stale = model_route("stale-model", "OpenAI", "openai-oauth");
+        stale.available = false;
+        stale.detail = "not available".to_string();
+        let available = model_route("gpt-5.5", "OpenAI", "openai-oauth");
+
+        let raw_routes = vec![stale, available];
+        assert_eq!(
+            raw_routes.iter().filter(|route| !route.available).count(),
+            1,
+            "fixture must include a catalog-unavailable route like the old gray picker rows",
+        );
+
+        let filtered = filter_unavailable_model_routes(raw_routes);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].model, "gpt-5.5");
+        assert!(
+            filtered.iter().all(|route| route.available),
+            "materialized picker input should contain no dark-gray/unselectable routes",
         );
     }
 }
