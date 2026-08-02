@@ -6,12 +6,11 @@ use super::{
     Provider, anthropic_api_key_route_availability, anthropic_oauth_route_availability, bedrock,
     build_anthropic_oauth_route, build_chatgpt_web_route, build_copilot_route,
     build_openai_api_key_route, build_openai_oauth_route, build_openrouter_auto_route,
-    build_openrouter_endpoint_route, build_openrouter_fallback_provider_route,
-    configured_standard_openrouter_profile_routes, copilot, dedupe_model_routes,
-    direct_openai_compatible_profile_routes, format_account_model_availability_detail,
-    is_listable_model_name, known_anthropic_model_ids, known_openai_model_ids,
-    model_availability_for_account, openrouter, openrouter_catalog_model_id, provider_for_model,
-    standard_openrouter_profile_configured,
+    build_openrouter_endpoint_route, configured_standard_openrouter_profile_routes, copilot,
+    dedupe_model_routes, direct_openai_compatible_profile_routes,
+    format_account_model_availability_detail, is_listable_model_name, known_anthropic_model_ids,
+    known_openai_model_ids, model_availability_for_account, openrouter,
+    openrouter_catalog_model_id, provider_for_model, standard_openrouter_profile_configured,
 };
 
 /// Build the fast local route snapshot used by the TUI model picker while the
@@ -209,8 +208,9 @@ struct OpenRouterRouteStats {
     scheduled_endpoint_refreshes: usize,
 }
 
-fn openrouter_model_is_openai(model: &str) -> bool {
-    model.trim().to_ascii_lowercase().starts_with("openai/")
+fn openrouter_model_is_native_vendor(model: &str) -> bool {
+    let model = model.trim().trim_start_matches('~').to_ascii_lowercase();
+    model.starts_with("openai/") || model.starts_with("anthropic/")
 }
 
 fn openrouter_endpoint_is_openai(endpoint: &openrouter::EndpointInfo) -> bool {
@@ -275,10 +275,6 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
             detail: "OPENROUTER_API_KEY not set".to_string(),
             cheapness: None,
         });
-    }
-
-    if has_openrouter_provider_features {
-        append_openrouter_alternative_routes(&mut routes, &mut openrouter_stats);
     }
 
     let total_ms = routes_started.elapsed().as_millis();
@@ -481,7 +477,10 @@ fn append_openai_compatible_profile_routes(
             continue;
         }
 
-        let profile_routes = direct_openai_compatible_profile_routes(profile);
+        let mut profile_routes = direct_openai_compatible_profile_routes(profile);
+        if resolved.id == "openrouter" {
+            profile_routes.retain(|route| !openrouter_model_is_native_vendor(&route.model));
+        }
         added_any |= !profile_routes.is_empty();
         routes.extend(profile_routes);
     }
@@ -657,7 +656,7 @@ fn append_openrouter_routes(
         );
     }
     for model in display_models {
-        if openrouter_model_is_openai(&model) {
+        if openrouter_model_is_native_vendor(&model) {
             continue;
         }
         stats.models += 1;
@@ -758,33 +757,11 @@ fn append_openrouter_routes(
         // provider and its `openrouter` namespace catalog is never refreshed by
         // the normal active-provider path. The background catalog scheduler
         // keeps that namespace fresh (issue #292); rendering only reads it.
-        routes.extend(configured_standard_openrouter_profile_routes());
-    }
-}
-
-/// Claude models reachable via OpenRouter as alternative routes.
-fn append_openrouter_alternative_routes(
-    routes: &mut Vec<ModelRoute>,
-    stats: &mut OpenRouterRouteStats,
-) {
-    for model in known_anthropic_model_ids() {
-        let or_model = format!("anthropic/{}", model);
-        if let Some((endpoints, _)) = openrouter::load_endpoints_disk_cache_public(&or_model) {
-            stats.endpoint_cache_hits += 1;
-            for ep in &endpoints {
-                if openrouter_endpoint_is_openai(ep) {
-                    continue;
-                }
-                stats.endpoint_routes += 1;
-                routes.push(build_openrouter_endpoint_route(&model, ep, true, None));
-            }
-        } else if openrouter::standard_catalog_lists_model(&or_model) != Some(false) {
-            routes.push(build_openrouter_fallback_provider_route(
-                &model,
-                &or_model,
-                "Anthropic",
-            ));
-        }
+        routes.extend(
+            configured_standard_openrouter_profile_routes()
+                .into_iter()
+                .filter(|route| !openrouter_model_is_native_vendor(&route.model)),
+        );
     }
 }
 
@@ -828,8 +805,18 @@ fn model_route_provider_sort_rank(route: &ModelRoute) -> u8 {
 
 fn sort_model_routes_for_picker(routes: &mut [ModelRoute]) {
     routes.sort_by(|left, right| {
-        model_route_provider_sort_rank(left)
-            .cmp(&model_route_provider_sort_rank(right))
+        let top_model_rank = |route: &ModelRoute| {
+            if route.model == jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL {
+                0u8
+            } else {
+                1u8
+            }
+        };
+        top_model_rank(left)
+            .cmp(&top_model_rank(right))
+            .then_with(|| {
+                model_route_provider_sort_rank(left).cmp(&model_route_provider_sort_rank(right))
+            })
             .then_with(|| {
                 left.model
                     .to_ascii_lowercase()
@@ -954,7 +941,7 @@ pub fn remote_model_routes_fallback(
         }
 
         if model.contains('/') {
-            if openrouter_model_is_openai(model) {
+            if openrouter_model_is_native_vendor(model) {
                 continue;
             }
             let cached = openrouter_cached;
@@ -1043,11 +1030,8 @@ pub fn remote_model_routes_fallback(
         }
 
         if auth.openrouter != AuthState::NotConfigured
-            && provider_for_model(model) != Some("openai")
+            && !matches!(provider_for_model(model), Some("openai" | "claude"))
         {
-            let catalog_lists_model = openrouter_catalog_model
-                .as_deref()
-                .and_then(openrouter::standard_catalog_lists_model);
             match (provider_for_model(model), openrouter_cached.as_ref()) {
                 (_, Some((endpoints, _age))) => {
                     for ep in endpoints {
@@ -1056,16 +1040,6 @@ pub fn remote_model_routes_fallback(
                         }
                         routes.push(build_openrouter_endpoint_route(model, ep, true, None));
                     }
-                    added_any = true;
-                }
-                // Skip fallback routes for models the OpenRouter catalog
-                // definitively does not list (e.g. gpt-5.3-codex-spark).
-                (Some("claude"), None) if catalog_lists_model != Some(false) => {
-                    routes.push(build_openrouter_fallback_provider_route(
-                        model,
-                        openrouter_catalog_model.as_deref().unwrap_or(model),
-                        "Anthropic",
-                    ));
                     added_any = true;
                 }
                 _ => {}
@@ -1440,9 +1414,14 @@ mod tests {
     }
 
     #[test]
-    fn model_routes_sort_openai_anthropic_openrouter_then_model_name() {
+    fn model_routes_sort_deepseek_first_then_openai_anthropic_openrouter_and_model_name() {
         let mut routes = vec![
             route_for_sort_test("zeta-openrouter", "auto", "openrouter"),
+            route_for_sort_test(
+                jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL,
+                "OpenRouter/DeepSeek",
+                "openrouter",
+            ),
             route_for_sort_test("beta-openai", "OpenAI", "openai-oauth"),
             route_for_sort_test("alpha-anthropic", "Anthropic", "claude-oauth"),
             route_for_sort_test("alpha-openai", "OpenAI", "openai-api"),
@@ -1459,6 +1438,7 @@ mod tests {
         assert_eq!(
             ordered,
             vec![
+                "OpenRouter/DeepSeek:deepseek/deepseek-v4-flash-0731",
                 "OpenAI:alpha-openai",
                 "OpenAI:beta-openai",
                 "Anthropic:alpha-anthropic",
@@ -1595,27 +1575,16 @@ mod tests {
         assert!(remote_openai_compatible_route_for_model("qwen3.6-plus").is_none());
     }
 
-    /// OpenRouter alternative routes are only for non-OpenAI fallbacks. OpenAI
-    /// models should be reached through OpenAI OAuth/API-key routes instead of
-    /// the user's OpenRouter balance.
     #[test]
-    fn openrouter_alternative_routes_do_not_add_openai_routes() {
-        let _guard = EnvGuard::new();
-
-        let mut routes = Vec::new();
-        let mut stats = OpenRouterRouteStats::default();
-        append_openrouter_alternative_routes(&mut routes, &mut stats);
-        assert!(
-            routes
-                .iter()
-                .any(|r| r.provider == "Anthropic" && r.api_method == "openrouter"),
-            "Anthropic OpenRouter alternatives are still useful fallbacks"
-        );
-        assert!(
-            !routes
-                .iter()
-                .any(|r| r.provider == "OpenAI" && r.api_method == "openrouter"),
-            "OpenAI must not be offered via OpenRouter"
-        );
+    fn openrouter_native_vendor_models_are_hidden() {
+        assert!(openrouter_model_is_native_vendor("openai/gpt-5.6-sol"));
+        assert!(openrouter_model_is_native_vendor("anthropic/claude-opus-5"));
+        assert!(openrouter_model_is_native_vendor("~openai/gpt-latest"));
+        assert!(openrouter_model_is_native_vendor(
+            "~anthropic/claude-opus-latest"
+        ));
+        assert!(!openrouter_model_is_native_vendor(
+            jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL
+        ));
     }
 }

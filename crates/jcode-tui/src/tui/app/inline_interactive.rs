@@ -1801,8 +1801,10 @@ impl App {
             };
             let a_old = if a.old { 1u8 } else { 0 };
             let b_old = if b.old { 1u8 } else { 0 };
-            entry_provider_sort_rank(a)
-                .cmp(&entry_provider_sort_rank(b))
+            a.recommendation_rank
+                .min(1)
+                .cmp(&b.recommendation_rank.min(1))
+                .then(entry_provider_sort_rank(a).cmp(&entry_provider_sort_rank(b)))
                 .then(entry_model_sort_key(a).cmp(&entry_model_sort_key(b)))
                 .then(a_avail.cmp(&b_avail))
                 .then(a_current.cmp(&b_current))
@@ -4130,7 +4132,7 @@ mod tests {
                 jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL
             ),
             0,
-            "DeepSeek V4 Flash 0731 is the top OpenRouter recommendation"
+            "DeepSeek V4 Flash 0731 is the top model-picker recommendation"
         );
         assert!(model_picker_route_is_recommended(
             jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL,
