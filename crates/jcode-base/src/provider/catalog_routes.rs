@@ -293,7 +293,8 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
     // flooded with hundreds of unusable entries.
     routes.retain(|route| is_listable_model_name(&route.model));
 
-    let routes = dedupe_model_routes(routes);
+    let mut routes = dedupe_model_routes(routes);
+    sort_model_routes_for_picker(&mut routes);
 
     // Structured, always-on summary of catalog route building. This is the
     // single most useful line for the recurring "model picker empty / only
@@ -789,6 +790,48 @@ fn provider_route_counts(routes: &[ModelRoute]) -> std::collections::BTreeMap<St
         *counts.entry(key).or_insert(0) += 1;
     }
     counts
+}
+
+fn model_route_provider_sort_rank(route: &ModelRoute) -> u8 {
+    match route.api_method_kind() {
+        jcode_provider_core::ModelRouteApiMethod::OpenAIOAuth
+        | jcode_provider_core::ModelRouteApiMethod::OpenAIApiKey => 0,
+        jcode_provider_core::ModelRouteApiMethod::Other(ref method) if method == "chatgpt-web" => 0,
+        jcode_provider_core::ModelRouteApiMethod::ClaudeOAuth
+        | jcode_provider_core::ModelRouteApiMethod::AnthropicApiKey => 1,
+        jcode_provider_core::ModelRouteApiMethod::OpenRouter => 2,
+        jcode_provider_core::ModelRouteApiMethod::OpenAiCompatible { ref profile_id }
+            if profile_id.as_deref() == Some("openrouter") =>
+        {
+            2
+        }
+        _ => match route.provider.trim().to_ascii_lowercase().as_str() {
+            "openai" => 0,
+            "anthropic" | "claude" => 1,
+            "openrouter" => 2,
+            _ => 3,
+        },
+    }
+}
+
+fn sort_model_routes_for_picker(routes: &mut [ModelRoute]) {
+    routes.sort_by(|left, right| {
+        model_route_provider_sort_rank(left)
+            .cmp(&model_route_provider_sort_rank(right))
+            .then_with(|| {
+                left.model
+                    .to_ascii_lowercase()
+                    .cmp(&right.model.to_ascii_lowercase())
+            })
+            .then_with(|| left.model.cmp(&right.model))
+            .then_with(|| {
+                left.provider
+                    .to_ascii_lowercase()
+                    .cmp(&right.provider.to_ascii_lowercase())
+            })
+            .then_with(|| left.provider.cmp(&right.provider))
+            .then_with(|| left.api_method.cmp(&right.api_method))
+    });
 }
 
 /// Emit a structured, non-secret summary of model-route building. Callers pass
@@ -1380,6 +1423,47 @@ mod tests {
             named_provider_profile_route_for_model_in("some-other-model", &providers).is_none()
         );
         assert!(named_provider_profile_route_for_model_in("", &providers).is_none());
+    }
+
+    #[test]
+    fn model_routes_sort_openai_anthropic_openrouter_then_model_name() {
+        let mut routes = vec![
+            route_for_sort_test("zeta-openrouter", "auto", "openrouter"),
+            route_for_sort_test("beta-openai", "OpenAI", "openai-oauth"),
+            route_for_sort_test("alpha-anthropic", "Anthropic", "claude-oauth"),
+            route_for_sort_test("alpha-openai", "OpenAI", "openai-api"),
+            route_for_sort_test("alpha-openrouter", "OpenRouter", "openrouter"),
+            route_for_sort_test("zeta-anthropic", "Anthropic", "claude-api"),
+        ];
+
+        sort_model_routes_for_picker(&mut routes);
+
+        let ordered = routes
+            .iter()
+            .map(|route| format!("{}:{}", route.provider, route.model))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered,
+            vec![
+                "OpenAI:alpha-openai",
+                "OpenAI:beta-openai",
+                "Anthropic:alpha-anthropic",
+                "Anthropic:zeta-anthropic",
+                "OpenRouter:alpha-openrouter",
+                "auto:zeta-openrouter",
+            ]
+        );
+    }
+
+    fn route_for_sort_test(model: &str, provider: &str, api_method: &str) -> ModelRoute {
+        ModelRoute {
+            model: model.to_string(),
+            provider: provider.to_string(),
+            api_method: api_method.to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        }
     }
 
     #[test]

@@ -1451,21 +1451,49 @@ impl App {
         }
         let grouping_ms = grouping_started.elapsed().as_millis();
 
+        fn model_picker_provider_sort_rank(provider: &str, api_method: &str) -> u8 {
+            match crate::provider::ModelRouteApiMethod::parse(api_method) {
+                crate::provider::ModelRouteApiMethod::OpenAIOAuth
+                | crate::provider::ModelRouteApiMethod::OpenAIApiKey => 0,
+                crate::provider::ModelRouteApiMethod::ClaudeOAuth
+                | crate::provider::ModelRouteApiMethod::AnthropicApiKey => 1,
+                crate::provider::ModelRouteApiMethod::OpenRouter => 2,
+                crate::provider::ModelRouteApiMethod::OpenAiCompatible { profile_id } => {
+                    if profile_id.as_deref() == Some("openrouter") {
+                        2
+                    } else {
+                        provider_label_model_picker_sort_rank(provider)
+                    }
+                }
+                _ => provider_label_model_picker_sort_rank(provider),
+            }
+        }
+
+        fn provider_label_model_picker_sort_rank(provider: &str) -> u8 {
+            match provider.trim().to_ascii_lowercase().as_str() {
+                "openai" => 0,
+                "anthropic" | "claude" => 1,
+                "openrouter" => 2,
+                _ => 3,
+            }
+        }
+
+        fn entry_provider_sort_rank(entry: &PickerEntry) -> u8 {
+            entry
+                .active_option()
+                .map(|route| model_picker_provider_sort_rank(&route.provider, &route.api_method))
+                .unwrap_or(3)
+        }
+
+        fn entry_model_sort_key(entry: &PickerEntry) -> String {
+            entry.name.to_ascii_lowercase()
+        }
+
         fn route_sort_key(r: &PickerOption) -> (u8, u8, u64, String) {
             let avail = if r.available { 0 } else { 1 };
-            let method = match crate::provider::ModelRouteApiMethod::parse(&r.api_method) {
-                crate::provider::ModelRouteApiMethod::ClaudeOAuth
-                | crate::provider::ModelRouteApiMethod::OpenAIOAuth
-                | crate::provider::ModelRouteApiMethod::OpenAIApiKey => 0,
-                crate::provider::ModelRouteApiMethod::AnthropicApiKey
-                | crate::provider::ModelRouteApiMethod::OpenAiCompatible { .. } => 1,
-                crate::provider::ModelRouteApiMethod::Cursor => 2,
-                crate::provider::ModelRouteApiMethod::Copilot => 3,
-                crate::provider::ModelRouteApiMethod::OpenRouter => 4,
-                _ => 5,
-            };
+            let provider_rank = model_picker_provider_sort_rank(&r.provider, &r.api_method);
             let cheapness = r.estimated_reference_cost_micros.unwrap_or(u64::MAX);
-            (avail, method, cheapness, r.provider.clone())
+            (avail, provider_rank, cheapness, r.provider.clone())
         }
 
         fn route_matches_recent_auth(route_provider: &str, login_provider: &str) -> bool {
@@ -1710,14 +1738,16 @@ impl App {
             };
             let a_old = if a.old { 1u8 } else { 0 };
             let b_old = if b.old { 1u8 } else { 0 };
-            a_current
-                .cmp(&b_current)
+            entry_provider_sort_rank(a)
+                .cmp(&entry_provider_sort_rank(b))
+                .then(entry_model_sort_key(a).cmp(&entry_model_sort_key(b)))
+                .then(a_avail.cmp(&b_avail))
+                .then(a_current.cmp(&b_current))
                 .then(a_favorite.cmp(&b_favorite))
                 .then(a_recent.cmp(&b_recent))
                 .then(a_usage.cmp(&b_usage))
                 .then(a_rec.cmp(&b_rec))
                 .then(a_rec_rank.cmp(&b_rec_rank))
-                .then(a_avail.cmp(&b_avail))
                 .then(a_old.cmp(&b_old))
                 .then(a.name.cmp(&b.name))
                 .then_with(|| {

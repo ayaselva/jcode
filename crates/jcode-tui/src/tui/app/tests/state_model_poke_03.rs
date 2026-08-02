@@ -1161,6 +1161,28 @@ fn test_model_picker_state_space_preserves_provider_labels_after_route_hydration
         "opening the model list must not collapse every route to the recently authenticated direct provider: {:?}",
         routes_by_model
     );
+
+    let sorted_rows: Vec<(u8, String)> = picker
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            entry.active_option().map(|route| {
+                let provider_rank = match route.api_method.as_str() {
+                    "openai-oauth" | "openai-api" => 0,
+                    "claude-oauth" | "claude-api" => 1,
+                    "openrouter" | "openai-compatible:openrouter" => 2,
+                    _ => 3,
+                };
+                (provider_rank, entry.name.to_ascii_lowercase())
+            })
+        })
+        .collect();
+    let mut expected_rows = sorted_rows.clone();
+    expected_rows.sort();
+    assert_eq!(
+        sorted_rows, expected_rows,
+        "model picker rows should be grouped OpenAI, Anthropic, OpenRouter, then alphabetical by model name"
+    );
 }
 
 #[test]
