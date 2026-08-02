@@ -286,7 +286,7 @@ fn test_startup_initializes_anthropic_from_saved_api_key_and_marks_routes_availa
 }
 
 #[test]
-fn test_anthropic_model_routes_keep_plain_4_6_available_without_extra_usage() {
+fn test_anthropic_model_routes_keep_1m_available_while_extra_usage_is_unknown() {
     with_clean_provider_test_env(|| {
         let runtime = enter_test_runtime();
         let _enter = runtime.enter();
@@ -344,8 +344,8 @@ fn test_anthropic_model_routes_keep_plain_4_6_available_without_extra_usage() {
                     && route.model == "claude-opus-4-6[1m]"
             })
             .expect("1m opus route");
-        assert!(!opus_1m.available);
-        assert_eq!(opus_1m.detail, "requires extra usage");
+        assert!(opus_1m.available);
+        assert_eq!(opus_1m.detail, "extra usage not yet verified");
     });
 }
 

@@ -147,6 +147,7 @@ fn route_detail_is_limited(detail: &str) -> bool {
         || lower.contains("requires an inference profile")
         || lower.contains("catalog still loading")
         || lower.contains("provider will initialize")
+        || lower.contains("not yet verified")
 }
 
 fn selected_route_notice_text(
@@ -1073,6 +1074,15 @@ mod tests {
                 .as_ref()
                 .map(|(text, warning)| (text.as_str(), *warning)),
             Some(("⚠ ConverseStream · no tools", true))
+        );
+
+        picker.entries[0].options[0].detail = "extra usage not yet verified".to_string();
+        let notice = selected_route_notice_text(&picker, picker.entries[0].active_option());
+        assert_eq!(
+            notice
+                .as_ref()
+                .map(|(text, warning)| (text.as_str(), *warning)),
+            Some(("⚠ extra usage not yet verified", true))
         );
     }
 

@@ -158,14 +158,34 @@ pub fn get_openai_usage_sync() -> OpenAIUsageData {
 }
 
 /// Check if extra usage (1M context, etc.) is enabled for the account.
-/// Returns false if unknown/not yet fetched.
-pub fn has_extra_usage() -> bool {
+///
+/// Returns `None` when usage has not been fetched yet or the latest refresh
+/// failed. Callers that only need a hard boolean can use [`has_extra_usage`],
+/// but route construction should preserve the unknown state so the model picker
+/// does not render long-context models as definitely unavailable before the
+/// entitlement probe completes.
+pub fn extra_usage_state() -> Option<bool> {
     if let Some(usage) = USAGE.get()
         && let Ok(data) = usage.try_read()
     {
-        return data.extra_usage_enabled;
+        if data.fetched_at.is_some() && data.last_error.is_none() {
+            return Some(data.extra_usage_enabled);
+        }
     }
-    false
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::spawn(async {
+            let _ = get().await;
+        });
+    }
+
+    None
+}
+
+/// Check if extra usage (1M context, etc.) is enabled for the account.
+/// Returns false if unknown/not yet fetched.
+pub fn has_extra_usage() -> bool {
+    extra_usage_state().unwrap_or(false)
 }
 
 /// Fetch usage data for a specific Anthropic account token (blocking).
