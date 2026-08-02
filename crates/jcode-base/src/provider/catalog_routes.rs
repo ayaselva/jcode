@@ -217,6 +217,16 @@ fn openrouter_endpoint_is_openai(endpoint: &openrouter::EndpointInfo) -> bool {
     endpoint.provider_name.trim().eq_ignore_ascii_case("OpenAI")
 }
 
+fn openrouter_cache_has_non_openai_endpoint_routes(
+    cached: Option<&(Vec<openrouter::EndpointInfo>, u64)>,
+) -> bool {
+    cached.is_some_and(|(endpoints, _)| {
+        endpoints
+            .iter()
+            .any(|endpoint| !openrouter_endpoint_is_openai(endpoint))
+    })
+}
+
 /// Build the full multi-provider route catalog.
 ///
 /// Orchestration only: each provider family contributes routes through its
@@ -691,7 +701,9 @@ fn append_openrouter_routes(
                 })
             })
             .unwrap_or_default();
-        if supports_openrouter_provider_features {
+        if supports_openrouter_provider_features
+            && !openrouter_cache_has_non_openai_endpoint_routes(cached.as_ref())
+        {
             routes.push(build_openrouter_auto_route(
                 &model,
                 has_openrouter,
@@ -950,11 +962,13 @@ pub fn remote_model_routes_fallback(
                 .as_ref()
                 .and_then(|(eps, _)| eps.first().map(|ep| format!("→ {}", ep.provider_name)))
                 .unwrap_or_default();
-            routes.push(build_openrouter_auto_route(
-                model,
-                auth.openrouter != AuthState::NotConfigured,
-                auto_detail,
-            ));
+            if !openrouter_cache_has_non_openai_endpoint_routes(cached.as_ref()) {
+                routes.push(build_openrouter_auto_route(
+                    model,
+                    auth.openrouter != AuthState::NotConfigured,
+                    auto_detail,
+                ));
+            }
             if let Some((endpoints, age)) = cached {
                 let age_str = if age < 3600 {
                     format!("{}m ago", age / 60)
@@ -1464,6 +1478,35 @@ mod tests {
             detail: String::new(),
             cheapness: None,
         }
+    }
+
+    fn endpoint_for_test(provider_name: &str) -> openrouter::EndpointInfo {
+        openrouter::EndpointInfo {
+            provider_name: provider_name.to_string(),
+            tag: None,
+            pricing: jcode_provider_openrouter::ModelPricing::default(),
+            context_length: None,
+            max_completion_tokens: None,
+            quantization: None,
+            uptime_last_30m: None,
+            latency_last_30m: None,
+            throughput_last_30m: None,
+            supports_implicit_caching: None,
+            status: None,
+        }
+    }
+
+    #[test]
+    fn openrouter_auto_route_is_only_fallback_when_no_concrete_endpoint_routes_exist() {
+        assert!(!openrouter_cache_has_non_openai_endpoint_routes(None));
+        assert!(!openrouter_cache_has_non_openai_endpoint_routes(Some(&(
+            vec![endpoint_for_test("OpenAI")],
+            0,
+        ))));
+        assert!(openrouter_cache_has_non_openai_endpoint_routes(Some(&(
+            vec![endpoint_for_test("OpenAI"), endpoint_for_test("DeepInfra")],
+            0,
+        ))));
     }
 
     #[test]
