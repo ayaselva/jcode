@@ -2,6 +2,73 @@ use super::openrouter_sse_stream::run_stream_with_retries;
 use super::*;
 use jcode_base::provider::{ModelCatalogRefreshSummary, summarize_model_catalog_refresh};
 
+fn completion_price_per_mtok_micros(pricing: &ModelPricing) -> Option<u64> {
+    let raw = pricing.completion.as_deref()?;
+    let per_token = raw.trim().parse::<f64>().ok()?;
+    if !per_token.is_finite() || per_token < 0.0 {
+        return None;
+    }
+    Some((per_token * 1_000_000.0 * 1_000_000.0).round() as u64)
+}
+
+fn format_completion_eur_label(price_micros: u64) -> String {
+    let cents = (price_micros + 5_000) / 10_000;
+    let euros = cents / 100;
+    let cents = cents % 100;
+    format!("€{euros},{cents:02}")
+}
+
+fn endpoint_throughput_tps(endpoint: &EndpointInfo) -> Option<f64> {
+    let value = endpoint.throughput_last_30m.as_ref()?;
+    let tps = match value {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::Object(map) => map.get("p50").and_then(|value| value.as_f64()),
+        _ => None,
+    }?;
+    tps.is_finite().then_some(tps).filter(|value| *value > 0.0)
+}
+
+fn fastest_endpoint(endpoints: &[EndpointInfo]) -> Option<&EndpointInfo> {
+    endpoints.iter().max_by(|left, right| {
+        let left_tps = endpoint_throughput_tps(left).unwrap_or(0.0);
+        let right_tps = endpoint_throughput_tps(right).unwrap_or(0.0);
+        left_tps
+            .partial_cmp(&right_tps)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+fn append_openrouter_model_picker_summary(model: &str, detail: &mut String) {
+    let mut parts = Vec::new();
+
+    let endpoint = load_endpoints_disk_cache_public(model)
+        .and_then(|(endpoints, _age)| fastest_endpoint(&endpoints).cloned());
+    if let Some(endpoint) = endpoint.as_ref()
+        && let Some(tps) = endpoint_throughput_tps(endpoint)
+    {
+        parts.push(format!("({:.0} tps)", tps));
+    }
+
+    let price_micros = endpoint
+        .as_ref()
+        .and_then(|endpoint| completion_price_per_mtok_micros(&endpoint.pricing))
+        .or_else(|| {
+            load_model_pricing_disk_cache_public(model)
+                .as_ref()
+                .and_then(completion_price_per_mtok_micros)
+        });
+    if let Some(price_micros) = price_micros {
+        parts.push(format_completion_eur_label(price_micros));
+    }
+
+    if !parts.is_empty() {
+        if !detail.trim().is_empty() {
+            detail.push_str("; ");
+        }
+        detail.push_str(&parts.join(" "));
+    }
+}
+
 #[async_trait]
 impl Provider for OpenRouterProvider {
     fn runtime_display_name(&self) -> String {
@@ -540,9 +607,13 @@ impl Provider for OpenRouterProvider {
             {
                 self.maybe_schedule_model_catalog_refresh(cache_age, "display memory cache");
             }
-            return finalize(merge_static_models(
-                cache.models.iter().map(|m| m.id.clone()).collect(),
-            ));
+            return finalize(merge_static_models(if self.supports_provider_features {
+                crate::filter_native_vendor_model_ids(
+                    cache.models.iter().map(|m| m.id.clone()).collect(),
+                )
+            } else {
+                cache.models.iter().map(|m| m.id.clone()).collect()
+            }));
         }
 
         if let Some(cache_entry) = self.load_usable_model_disk_cache_entry() {
@@ -555,9 +626,13 @@ impl Provider for OpenRouterProvider {
                 cache.cached_at = Some(cache_entry.cached_at);
             }
             self.maybe_schedule_model_catalog_refresh(cache_age, "display disk cache");
-            return finalize(merge_static_models(
-                cache_entry.models.into_iter().map(|m| m.id).collect(),
-            ));
+            return finalize(merge_static_models(if self.supports_provider_features {
+                crate::filter_native_vendor_model_ids(
+                    cache_entry.models.into_iter().map(|m| m.id).collect(),
+                )
+            } else {
+                cache_entry.models.into_iter().map(|m| m.id).collect()
+            }));
         }
 
         // No memory or disk catalog yet. This commonly happens immediately after
@@ -608,7 +683,7 @@ impl Provider for OpenRouterProvider {
                         .as_ref()
                         .map(|live| !live.contains(&model))
                         .unwrap_or_else(|| static_model_ids.contains(&model));
-                let route_detail = if fallback_not_live {
+                let mut route_detail = if fallback_not_live {
                     if detail.trim().is_empty() {
                         "fallback: static provider model list".to_string()
                     } else {
@@ -617,6 +692,13 @@ impl Provider for OpenRouterProvider {
                 } else {
                     detail.clone()
                 };
+                let openrouter_backed_route = self.supports_provider_features
+                    || provider_label.eq_ignore_ascii_case("openrouter")
+                    || api_method.eq_ignore_ascii_case("openrouter")
+                    || self.api_base.contains("openrouter.ai");
+                if openrouter_backed_route {
+                    append_openrouter_model_picker_summary(&model, &mut route_detail);
+                }
                 jcode_provider_core::ModelRoute {
                     model,
                     provider: provider_label.clone(),

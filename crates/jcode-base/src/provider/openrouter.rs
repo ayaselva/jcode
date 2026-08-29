@@ -39,6 +39,27 @@ pub fn standard_catalog_lists_model(model_id: &str) -> Option<bool> {
     Some(cache.models.iter().any(|model| model.id == model_id))
 }
 
+/// Euro label for one million output tokens from the OpenRouter disk catalog.
+pub fn completion_price_eur_label_for_model(model_id: &str) -> Option<String> {
+    let cache = jcode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter")
+        .or_else(jcode_provider_openrouter::load_disk_cache_entry)?;
+    let pricing = cache
+        .models
+        .iter()
+        .find(|model| model.id == model_id)?
+        .pricing
+        .completion
+        .as_deref()?;
+    let usd_per_token = pricing
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0)?;
+    let cents = (usd_per_token * 1_000_000.0 * 100.0).round() as u64;
+    let euros = cents / 100;
+    let cents = cents % 100;
+    Some(format!("€{euros},{cents:02}"))
+}
+
 /// Schedule a background catalog refresh for a direct OpenAI-compatible
 /// profile through the composition-root hook (implemented by the runtime
 /// crate). Kept at its historical path for callers.

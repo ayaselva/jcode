@@ -1514,27 +1514,27 @@ impl App {
 
         fn model_picker_provider_sort_rank(provider: &str, api_method: &str) -> u8 {
             match crate::provider::ModelRouteApiMethod::parse(api_method) {
-                crate::provider::ModelRouteApiMethod::OpenAIOAuth
-                | crate::provider::ModelRouteApiMethod::OpenAIApiKey => 0,
-                crate::provider::ModelRouteApiMethod::ClaudeOAuth
-                | crate::provider::ModelRouteApiMethod::AnthropicApiKey => 1,
-                crate::provider::ModelRouteApiMethod::OpenRouter => 2,
+                crate::provider::ModelRouteApiMethod::OpenRouter => 0,
                 crate::provider::ModelRouteApiMethod::OpenAiCompatible { profile_id } => {
                     if profile_id.as_deref() == Some("openrouter") {
-                        2
+                        0
                     } else {
                         provider_label_model_picker_sort_rank(provider)
                     }
                 }
+                crate::provider::ModelRouteApiMethod::OpenAIOAuth
+                | crate::provider::ModelRouteApiMethod::OpenAIApiKey => 1,
+                crate::provider::ModelRouteApiMethod::ClaudeOAuth
+                | crate::provider::ModelRouteApiMethod::AnthropicApiKey => 2,
                 _ => provider_label_model_picker_sort_rank(provider),
             }
         }
 
         fn provider_label_model_picker_sort_rank(provider: &str) -> u8 {
             match provider.trim().to_ascii_lowercase().as_str() {
-                "openai" => 0,
-                "anthropic" | "claude" => 1,
-                "openrouter" => 2,
+                "openrouter" | "auto" => 0,
+                "openai" => 1,
+                "anthropic" | "claude" => 2,
                 _ => 3,
             }
         }
@@ -1548,6 +1548,29 @@ impl App {
 
         fn entry_model_sort_key(entry: &PickerEntry) -> String {
             entry.name.to_ascii_lowercase()
+        }
+
+        fn picker_option_openrouter_eur_cents(route: &PickerOption) -> Option<u64> {
+            if model_picker_provider_sort_rank(&route.provider, &route.api_method) != 0 {
+                return None;
+            }
+            let (_, raw) = route.detail.split_once('€')?;
+            let amount = raw
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit() || *ch == ',' || *ch == '.')
+                .collect::<String>()
+                .replace(',', ".");
+            let euros = amount.parse::<f64>().ok()?;
+            Some((euros * 100.0).round() as u64)
+        }
+
+        fn entry_openrouter_output_price_desc_key(entry: &PickerEntry) -> std::cmp::Reverse<u64> {
+            std::cmp::Reverse(
+                entry
+                    .active_option()
+                    .and_then(picker_option_openrouter_eur_cents)
+                    .unwrap_or(0),
+            )
         }
 
         fn route_sort_key(r: &PickerOption) -> (u8, u8, u64, String) {
@@ -1801,10 +1824,17 @@ impl App {
             };
             let a_old = if a.old { 1u8 } else { 0 };
             let b_old = if b.old { 1u8 } else { 0 };
-            a.recommendation_rank
-                .min(1)
-                .cmp(&b.recommendation_rank.min(1))
-                .then(entry_provider_sort_rank(a).cmp(&entry_provider_sort_rank(b)))
+            entry_provider_sort_rank(a)
+                .cmp(&entry_provider_sort_rank(b))
+                .then(
+                    entry_openrouter_output_price_desc_key(a)
+                        .cmp(&entry_openrouter_output_price_desc_key(b)),
+                )
+                .then(
+                    a.recommendation_rank
+                        .min(1)
+                        .cmp(&b.recommendation_rank.min(1)),
+                )
                 .then(entry_model_sort_key(a).cmp(&entry_model_sort_key(b)))
                 .then(a_avail.cmp(&b_avail))
                 .then(a_current.cmp(&b_current))

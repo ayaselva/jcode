@@ -163,7 +163,7 @@ impl EndpointInfo {
             && let Some(t) = Self::extract_p50(tps)
             && t > 0.0
         {
-            parts.push(format!("{:.0}tps", t));
+            parts.push(format!("{:.0} tps", t));
         }
         if let Some(cache) = self.supports_implicit_caching {
             parts.push(if cache { "cache on" } else { "cache off" }.to_string());
@@ -915,7 +915,7 @@ mod tests {
         let detail = ep.detail_string();
         assert!(detail.contains("$0.45/M"));
         assert!(detail.contains("99%"));
-        assert!(detail.contains("14tps"));
+        assert!(detail.contains("14 tps"));
         assert!(detail.contains("cache"));
         assert!(detail.contains("fp8"));
     }

@@ -26,6 +26,7 @@ pub fn simplified_model_routes_for_picker(
 ) -> Vec<ModelRoute> {
     let auth = AuthStatus::check_fast();
     let mut routes = Vec::new();
+    let openrouter_model_pricing = openrouter_pricing_cache();
 
     for model in display_models {
         if model == CHATGPT_WEB_MODEL {
@@ -136,6 +137,15 @@ pub fn simplified_model_routes_for_picker(
                 }
             };
 
+        let mut detail = detail;
+        if api_method == "openrouter" {
+            append_openrouter_speed_price_summary(
+                &mut detail,
+                None,
+                openrouter_model_pricing.get(&model),
+            );
+        }
+
         routes.push(ModelRoute {
             model,
             provider,
@@ -206,6 +216,106 @@ struct OpenRouterRouteStats {
     endpoint_cache_hits: usize,
     endpoint_routes: usize,
     scheduled_endpoint_refreshes: usize,
+}
+
+const OPENROUTER_QWEN38_FLASH_MODEL: &str = "qwen/qwen3.8-flash";
+
+fn openrouter_pricing_cache() -> std::collections::HashMap<String, openrouter::ModelPricing> {
+    jcode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter")
+        .or_else(jcode_provider_openrouter::load_disk_cache_entry)
+        .into_iter()
+        .flat_map(|cache| cache.models)
+        .map(|model| (model.id, model.pricing))
+        .collect()
+}
+
+fn openrouter_completion_price_per_mtok_micros_from_pricing(
+    pricing: &openrouter::ModelPricing,
+) -> Option<u64> {
+    pricing
+        .completion
+        .as_deref()?
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|usd_per_token| (usd_per_token * 1_000_000.0 * 1_000_000.0).round() as u64)
+}
+
+fn openrouter_completion_price_per_mtok_micros(model: &str) -> Option<u64> {
+    openrouter_pricing_cache()
+        .remove(model)
+        .and_then(|pricing| openrouter_completion_price_per_mtok_micros_from_pricing(&pricing))
+}
+
+fn openrouter_completion_price_per_mtok_micros_for_route(route: &ModelRoute) -> Option<u64> {
+    route
+        .cheapness
+        .as_ref()
+        .and_then(|cheapness| cheapness.output_price_per_mtok_micros)
+        .or_else(|| openrouter_completion_price_per_mtok_micros(&route.model))
+}
+
+fn format_openrouter_completion_eur_label(price_micros: u64) -> String {
+    let cents = (price_micros + 5_000) / 10_000;
+    let euros = cents / 100;
+    let cents = cents % 100;
+    format!("€{euros},{cents:02}")
+}
+
+fn openrouter_completion_eur_label_from_pricing(
+    pricing: &openrouter::ModelPricing,
+) -> Option<String> {
+    openrouter_completion_price_per_mtok_micros_from_pricing(pricing)
+        .map(format_openrouter_completion_eur_label)
+}
+
+fn openrouter_endpoint_throughput_tps(endpoint: &openrouter::EndpointInfo) -> Option<f64> {
+    let value = endpoint.throughput_last_30m.as_ref()?;
+    match value {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::Object(map) => map.get("p50").and_then(|value| value.as_f64()),
+        _ => None,
+    }
+    .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+fn openrouter_fastest_endpoint(
+    endpoints: &[openrouter::EndpointInfo],
+) -> Option<&openrouter::EndpointInfo> {
+    endpoints.iter().max_by(|left, right| {
+        let left_tps = openrouter_endpoint_throughput_tps(left).unwrap_or(-1.0);
+        let right_tps = openrouter_endpoint_throughput_tps(right).unwrap_or(-1.0);
+        left_tps
+            .partial_cmp(&right_tps)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+fn append_openrouter_speed_price_summary(
+    detail: &mut String,
+    endpoint: Option<&openrouter::EndpointInfo>,
+    model_pricing: Option<&openrouter::ModelPricing>,
+) {
+    let mut parts = Vec::new();
+    if !detail.contains("tps")
+        && let Some(tps) = endpoint.and_then(openrouter_endpoint_throughput_tps)
+    {
+        parts.push(format!("({:.0} tps)", tps));
+    }
+    let price = endpoint
+        .and_then(|endpoint| openrouter_completion_eur_label_from_pricing(&endpoint.pricing))
+        .or_else(|| model_pricing.and_then(openrouter_completion_eur_label_from_pricing));
+    if let Some(price) = price {
+        parts.push(price);
+    }
+    if parts.is_empty() {
+        return;
+    }
+    if detail.trim().is_empty() {
+        *detail = parts.join(" ");
+    } else {
+        *detail = format!("{} · {}", detail.trim(), parts.join(" "));
+    }
 }
 
 fn openrouter_model_is_native_vendor(model: &str) -> bool {
@@ -538,18 +648,38 @@ fn named_provider_profile_routes(
     } else {
         profile_config.base_url.trim().to_string()
     };
+    let is_openrouter_profile = profile_name
+        .trim()
+        .to_ascii_lowercase()
+        .contains("openrouter")
+        || profile_config
+            .base_url
+            .trim()
+            .to_ascii_lowercase()
+            .contains("openrouter.ai");
+    let openrouter_model_pricing = is_openrouter_profile.then(openrouter_pricing_cache);
 
     let mut routes: Vec<ModelRoute> = Vec::new();
     for model in models {
         if !is_listable_model_name(&model) || routes.iter().any(|route| route.model == model) {
             continue;
         }
+        let mut detail = detail.clone();
+        if is_openrouter_profile {
+            append_openrouter_speed_price_summary(
+                &mut detail,
+                None,
+                openrouter_model_pricing
+                    .as_ref()
+                    .and_then(|pricing| pricing.get(&model)),
+            );
+        }
         routes.push(ModelRoute {
             model,
             provider: profile_name.to_string(),
             api_method: api_method.clone(),
             available: true,
-            detail: detail.clone(),
+            detail,
             cheapness: None,
         });
     }
@@ -645,6 +775,7 @@ fn append_openrouter_routes(
     let current_openrouter_model = openrouter.model();
     let supports_openrouter_provider_features = openrouter.supports_provider_routing_features();
     let mut scheduled_endpoint_refreshes = 0usize;
+    let openrouter_model_pricing = openrouter_pricing_cache();
     let mut display_models = openrouter.available_models_display();
     if !display_models
         .iter()
@@ -654,6 +785,12 @@ fn append_openrouter_routes(
             0,
             jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL.to_string(),
         );
+    }
+    if !display_models
+        .iter()
+        .any(|model| model == OPENROUTER_QWEN38_FLASH_MODEL)
+    {
+        display_models.push(OPENROUTER_QWEN38_FLASH_MODEL.to_string());
     }
     for model in display_models {
         if openrouter_model_is_native_vendor(&model) {
@@ -687,16 +824,21 @@ fn append_openrouter_routes(
             }
         });
         // Auto route: hint which provider it would likely pick
+        let model_pricing = openrouter_model_pricing.get(&model);
         let auto_detail = cached
             .as_ref()
             .and_then(|(eps, _)| {
-                eps.first().map(|ep| {
-                    let endpoint_detail = ep.detail_string();
-                    if endpoint_detail.trim().is_empty() {
-                        format!("→ {}", ep.provider_name)
-                    } else {
-                        format!("→ {} · {}", ep.provider_name, endpoint_detail)
-                    }
+                openrouter_fastest_endpoint(eps).map(|ep| {
+                    let mut detail = format!("→ {}", ep.provider_name);
+                    append_openrouter_speed_price_summary(&mut detail, Some(ep), model_pricing);
+                    detail
+                })
+            })
+            .or_else(|| {
+                model_pricing.map(|pricing| {
+                    let mut detail = String::new();
+                    append_openrouter_speed_price_summary(&mut detail, None, Some(pricing));
+                    detail
                 })
             })
             .unwrap_or_default();
@@ -736,12 +878,10 @@ fn append_openrouter_routes(
                     continue;
                 }
                 stats.endpoint_routes += 1;
-                routes.push(build_openrouter_endpoint_route(
-                    &model,
-                    ep,
-                    has_openrouter,
-                    Some(stale_suffix),
-                ));
+                let mut route =
+                    build_openrouter_endpoint_route(&model, ep, has_openrouter, Some(stale_suffix));
+                append_openrouter_speed_price_summary(&mut route.detail, Some(ep), model_pricing);
+                routes.push(route);
             }
         }
     }
@@ -783,21 +923,21 @@ fn provider_route_counts(routes: &[ModelRoute]) -> std::collections::BTreeMap<St
 
 fn model_route_provider_sort_rank(route: &ModelRoute) -> u8 {
     match route.api_method_kind() {
-        jcode_provider_core::ModelRouteApiMethod::OpenAIOAuth
-        | jcode_provider_core::ModelRouteApiMethod::OpenAIApiKey => 0,
-        jcode_provider_core::ModelRouteApiMethod::Other(ref method) if method == "chatgpt-web" => 0,
-        jcode_provider_core::ModelRouteApiMethod::ClaudeOAuth
-        | jcode_provider_core::ModelRouteApiMethod::AnthropicApiKey => 1,
-        jcode_provider_core::ModelRouteApiMethod::OpenRouter => 2,
+        jcode_provider_core::ModelRouteApiMethod::OpenRouter => 0,
         jcode_provider_core::ModelRouteApiMethod::OpenAiCompatible { ref profile_id }
             if profile_id.as_deref() == Some("openrouter") =>
         {
-            2
+            0
         }
+        jcode_provider_core::ModelRouteApiMethod::OpenAIOAuth
+        | jcode_provider_core::ModelRouteApiMethod::OpenAIApiKey => 1,
+        jcode_provider_core::ModelRouteApiMethod::Other(ref method) if method == "chatgpt-web" => 1,
+        jcode_provider_core::ModelRouteApiMethod::ClaudeOAuth
+        | jcode_provider_core::ModelRouteApiMethod::AnthropicApiKey => 2,
         _ => match route.provider.trim().to_ascii_lowercase().as_str() {
-            "openai" => 0,
-            "anthropic" | "claude" => 1,
-            "openrouter" => 2,
+            "openrouter" | "auto" => 0,
+            "openai" => 1,
+            "anthropic" | "claude" => 2,
             _ => 3,
         },
     }
@@ -805,17 +945,16 @@ fn model_route_provider_sort_rank(route: &ModelRoute) -> u8 {
 
 fn sort_model_routes_for_picker(routes: &mut [ModelRoute]) {
     routes.sort_by(|left, right| {
-        let top_model_rank = |route: &ModelRoute| {
-            if route.model == jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL {
-                0u8
-            } else {
-                1u8
-            }
-        };
-        top_model_rank(left)
-            .cmp(&top_model_rank(right))
+        model_route_provider_sort_rank(left)
+            .cmp(&model_route_provider_sort_rank(right))
             .then_with(|| {
-                model_route_provider_sort_rank(left).cmp(&model_route_provider_sort_rank(right))
+                let left_openrouter = model_route_provider_sort_rank(left) == 0;
+                let right_openrouter = model_route_provider_sort_rank(right) == 0;
+                match (left_openrouter, right_openrouter) {
+                    (true, true) => openrouter_completion_price_per_mtok_micros_for_route(right)
+                        .cmp(&openrouter_completion_price_per_mtok_micros_for_route(left)),
+                    _ => std::cmp::Ordering::Equal,
+                }
             })
             .then_with(|| {
                 left.model
@@ -1414,18 +1553,29 @@ mod tests {
     }
 
     #[test]
-    fn model_routes_sort_deepseek_first_then_openai_anthropic_openrouter_and_model_name() {
+    fn model_routes_sort_openrouter_first_by_output_price_then_openai_and_anthropic() {
         let mut routes = vec![
-            route_for_sort_test("zeta-openrouter", "auto", "openrouter"),
-            route_for_sort_test(
-                jcode_provider_core::OPENROUTER_DEEPSEEK_FLASH_0731_MODEL,
+            route_for_sort_test_with_output_price(
+                "cheap-openrouter",
+                "auto",
+                "openrouter",
+                470_000,
+            ),
+            route_for_sort_test_with_output_price(
+                "premium-openrouter",
                 "OpenRouter/DeepSeek",
                 "openrouter",
+                6_000_000,
             ),
             route_for_sort_test("beta-openai", "OpenAI", "openai-oauth"),
             route_for_sort_test("alpha-anthropic", "Anthropic", "claude-oauth"),
             route_for_sort_test("alpha-openai", "OpenAI", "openai-api"),
-            route_for_sort_test("alpha-openrouter", "OpenRouter", "openrouter"),
+            route_for_sort_test_with_output_price(
+                "mid-openrouter",
+                "OpenRouter",
+                "openrouter",
+                1_980_000,
+            ),
             route_for_sort_test("zeta-anthropic", "Anthropic", "claude-api"),
         ];
 
@@ -1438,13 +1588,13 @@ mod tests {
         assert_eq!(
             ordered,
             vec![
-                "OpenRouter/DeepSeek:deepseek/deepseek-v4-flash-0731",
+                "OpenRouter/DeepSeek:premium-openrouter",
+                "OpenRouter:mid-openrouter",
+                "auto:cheap-openrouter",
                 "OpenAI:alpha-openai",
                 "OpenAI:beta-openai",
                 "Anthropic:alpha-anthropic",
                 "Anthropic:zeta-anthropic",
-                "OpenRouter:alpha-openrouter",
-                "auto:zeta-openrouter",
             ]
         );
     }
@@ -1458,6 +1608,42 @@ mod tests {
             detail: String::new(),
             cheapness: None,
         }
+    }
+
+    fn route_for_sort_test_with_output_price(
+        model: &str,
+        provider: &str,
+        api_method: &str,
+        output_price_per_mtok_micros: u64,
+    ) -> ModelRoute {
+        let mut route = route_for_sort_test(model, provider, api_method);
+        route.cheapness = Some(jcode_provider_core::RouteCheapnessEstimate::metered(
+            jcode_provider_core::RouteCostSource::OpenRouterCatalog,
+            jcode_provider_core::RouteCostConfidence::High,
+            0,
+            output_price_per_mtok_micros,
+            None,
+            None,
+        ));
+        route
+    }
+
+    #[test]
+    fn openrouter_price_and_speed_summary_uses_requested_picker_format() {
+        let mut endpoint = endpoint_for_test("Alibaba");
+        endpoint.pricing.completion = Some("0.00000047".to_string());
+        endpoint.throughput_last_30m = Some(serde_json::json!({ "p50": 123.4 }));
+        let mut detail = "→ Alibaba".to_string();
+
+        append_openrouter_speed_price_summary(&mut detail, Some(&endpoint), None);
+
+        assert_eq!(detail, "→ Alibaba · (123 tps) €0,47");
+    }
+
+    #[test]
+    fn openrouter_price_label_rounds_to_cents_with_comma() {
+        assert_eq!(format_openrouter_completion_eur_label(330_000), "€0,33");
+        assert_eq!(format_openrouter_completion_eur_label(6_000_000), "€6,00");
     }
 
     fn endpoint_for_test(provider_name: &str) -> openrouter::EndpointInfo {

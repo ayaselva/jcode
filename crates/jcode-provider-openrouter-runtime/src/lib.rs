@@ -66,6 +66,31 @@ const KIMI_CODING_X_APP: &str = "cli";
 /// Default model (Claude Sonnet via OpenRouter)
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4";
 
+/// True when `model` starts with a native vendor prefix (openai/ or anthropic/)
+/// that should be excluded from the OpenRouter aggregator catalog since jcode
+/// accesses those vendors directly.
+pub fn model_id_is_native_vendor(model: &str) -> bool {
+    let model = model.trim().trim_start_matches('~').to_ascii_lowercase();
+    model.starts_with("openai/") || model.starts_with("anthropic/")
+}
+
+/// Filter out native-vendor models (openai/ and anthropic/ prefixed) from a
+/// model-info list. Used for real OpenRouter endpoints where those vendors'
+/// models would duplicate direct-access routes.
+pub fn filter_native_vendor_models(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
+    models
+        .into_iter()
+        .filter(|m| !model_id_is_native_vendor(&m.id))
+        .collect()
+}
+
+/// Filter out native-vendor model ids from a list of string ids.
+pub fn filter_native_vendor_model_ids(ids: Vec<String>) -> Vec<String> {
+    ids.into_iter()
+        .filter(|id| !model_id_is_native_vendor(id))
+        .collect()
+}
+
 /// Soft refresh TTL for the model catalog.
 ///
 /// We keep the 24h disk cache for resilience/offline startup, but after this
@@ -843,7 +868,10 @@ pub fn maybe_schedule_standard_openrouter_catalog_refresh(context: &'static str)
         .await;
         let succeeded = result.is_ok();
         match result {
-            Ok(models) => {
+            Ok(mut models) => {
+                // Standard OpenRouter is always the aggregator;
+                // filter out native-vendor models that jcode accesses directly.
+                models = filter_native_vendor_models(models);
                 let updated = models_fingerprint(&models) != previous_fingerprint;
                 if updated {
                     jcode_base::logging::info(&format!(
@@ -1949,9 +1977,13 @@ impl OpenRouterProvider {
         let refresh_state = Arc::clone(&self.model_catalog_refresh);
         let previous_fingerprint = self.cached_model_catalog_fingerprint();
         let ns = self.foreground_cache_namespace();
+        let is_openrouter = self.supports_provider_features;
         handle.spawn(async move {
             match fetch_models_from_api(client, api_base, auth, models_cache, ns).await {
-                Ok(models) => {
+                Ok(mut models) => {
+                    if is_openrouter {
+                        models = filter_native_vendor_models(models);
+                    }
                     let updated = models_fingerprint(&models) != previous_fingerprint;
                     if updated {
                         jcode_base::logging::info(&format!(
@@ -2406,7 +2438,12 @@ impl OpenRouterProvider {
                 {
                     self.maybe_schedule_model_catalog_refresh(cached_at, "memory cache");
                 }
-                return Ok(cache.models.clone());
+                let models = if self.supports_provider_features {
+                    filter_native_vendor_models(cache.models.clone())
+                } else {
+                    cache.models.clone()
+                };
+                return Ok(models);
             }
         }
 
@@ -2415,35 +2452,52 @@ impl OpenRouterProvider {
             let cache_age = current_unix_secs()
                 .map(|now| now.saturating_sub(cache_entry.cached_at))
                 .unwrap_or(0);
+            let models = if self.supports_provider_features {
+                filter_native_vendor_models(cache_entry.models.clone())
+            } else {
+                cache_entry.models.clone()
+            };
             let mut cache = self.models_cache.write().await;
-            cache.models = cache_entry.models.clone();
+            cache.models = models.clone();
             cache.fetched = true;
             cache.cached_at = Some(cache_entry.cached_at);
             drop(cache);
             self.maybe_schedule_model_catalog_refresh(cache_age, "disk cache");
-            return Ok(cache_entry.models);
+            return Ok(models);
         }
 
-        fetch_models_from_api(
+        let result = fetch_models_from_api(
             self.client.clone(),
             self.api_base.clone(),
             self.auth.clone(),
             Arc::clone(&self.models_cache),
             self.foreground_cache_namespace(),
         )
-        .await
+        .await?;
+
+        Ok(if self.supports_provider_features {
+            filter_native_vendor_models(result)
+        } else {
+            result
+        })
     }
 
     /// Force refresh the models cache from API
     pub async fn refresh_models(&self) -> Result<Vec<ModelInfo>> {
-        fetch_models_from_api(
+        let result = fetch_models_from_api(
             self.client.clone(),
             self.api_base.clone(),
             self.auth.clone(),
             Arc::clone(&self.models_cache),
             self.foreground_cache_namespace(),
         )
-        .await
+        .await?;
+
+        Ok(if self.supports_provider_features {
+            filter_native_vendor_models(result)
+        } else {
+            result
+        })
     }
 
     /// Fetch per-provider endpoint data for a model from OpenRouter API.

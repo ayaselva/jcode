@@ -139,6 +139,47 @@ fn route_detail_display_text(detail: &str, unavailable: bool) -> Option<String> 
     }
 }
 
+fn route_detail_price_speed_suffix(detail: &str) -> String {
+    let mut parts = Vec::new();
+    if let Some(start) = detail.find('(')
+        && let Some(end_offset) = detail[start..].find(')')
+    {
+        let candidate = &detail[start..=start + end_offset];
+        if candidate.to_ascii_lowercase().contains("tps") {
+            parts.push(candidate.to_string());
+        }
+    }
+    if let Some(start) = detail.find('€') {
+        let price = detail[start..]
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit() || *ch == '€' || *ch == ',' || *ch == '.')
+            .collect::<String>();
+        if price.len() > '€'.len_utf8() {
+            parts.push(price);
+        }
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", parts.join(" "))
+    }
+}
+
+fn route_method_display(route: &crate::tui::PickerOption, model: Option<&str>) -> String {
+    let mut suffix = route_detail_price_speed_suffix(&route.detail);
+    if suffix.find('€').is_none()
+        && crate::provider::ModelRouteApiMethod::parse(&route.api_method).is_openrouter()
+        && let Some(model) = model
+        && let Some(price) = crate::provider::openrouter::completion_price_eur_label_for_model(
+            model.rsplit_once(" (").map(|(base, _)| base).unwrap_or(model),
+        )
+    {
+        suffix.push(' ');
+        suffix.push_str(&price);
+    }
+    format!("{}{}", api_method_display(&route.api_method), suffix)
+}
+
 fn route_detail_is_limited(detail: &str) -> bool {
     let lower = detail.to_ascii_lowercase();
     lower.contains("fallback:")
@@ -390,7 +431,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         let route = entry.active_option();
         if let Some(r) = route {
             max_provider_len = max_provider_len.max(display_width(r.provider.as_str()));
-            max_via_len = max_via_len.max(display_width(&api_method_display(&r.api_method)));
+            max_via_len = max_via_len.max(display_width(&route_method_display(r, Some(&entry.name))));
         }
         if is_account_picker {
             let (title, _) = account_picker_entry_title(entry, show_account_provider_badge);
@@ -810,7 +851,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         };
 
         let via_raw = route
-            .map(|r| api_method_display(&r.api_method))
+            .map(|route| route_method_display(route, Some(&entry.name)))
             .unwrap_or_else(|| "-".to_string());
         let vw = via_width.saturating_sub(1);
         let via_display = format!(" {}", pad_left_display(via_raw.as_str(), vw));
