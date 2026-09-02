@@ -1836,7 +1836,7 @@ fn handle_disconnected_key_internal(
                 return Ok(());
             }
             KeyCode::Char('l') if !app.diff_pane_visible() => {
-                app.follow_chat_bottom();
+                app.clear_view_terminal_style();
                 return Ok(());
             }
             _ => {
@@ -1884,9 +1884,10 @@ fn handle_disconnected_key_internal(
                 app.paste_from_clipboard();
                 return Ok(());
             }
-            // Cmd+L mirrors Ctrl+L: snap to the bottom of the chat.
+            // Cmd+L mirrors Ctrl+L: terminal-style clear (blank spacer
+            // pushes the transcript up into scrollback).
             KeyCode::Char('l') => {
-                app.follow_chat_bottom();
+                app.clear_view_terminal_style();
                 return Ok(());
             }
             _ => {}
