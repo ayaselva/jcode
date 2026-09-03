@@ -2,14 +2,17 @@ use super::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use serde::Deserialize;
+use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio_tungstenite::tungstenite::Message;
 
 pub struct BrowserTool;
 
 static FIREFOX_PROVIDER: FirefoxBridgeProvider = FirefoxBridgeProvider;
+static CHROMIUM_PROVIDER: ChromiumCdpProvider = ChromiumCdpProvider;
 
 impl BrowserTool {
     pub fn new() -> Self {
@@ -82,7 +85,7 @@ struct BrowserInput {
     scroll_to: Option<ScrollTo>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct BrowserField {
     selector: String,
     #[serde(default)]
@@ -116,6 +119,8 @@ trait BrowserProvider: Send + Sync {
 }
 
 struct FirefoxBridgeProvider;
+
+struct ChromiumCdpProvider;
 
 #[async_trait]
 impl BrowserProvider for FirefoxBridgeProvider {
@@ -157,6 +162,62 @@ impl BrowserProvider for FirefoxBridgeProvider {
             execute_firefox_action(self, action, input, ctx).await?,
             self.id(),
             "firefox",
+        ))
+    }
+}
+
+#[async_trait]
+impl BrowserProvider for ChromiumCdpProvider {
+    fn id(&self) -> &'static str {
+        "chromium_cdp"
+    }
+
+    fn supported_browsers(&self) -> &'static [&'static str] {
+        &["auto", "chrome", "chromium"]
+    }
+
+    async fn status(&self, _ctx: &ToolContext) -> Result<ToolOutput> {
+        Ok(attach_browser_metadata(
+            chromium_status().await?,
+            self.id(),
+            "chromium",
+        ))
+    }
+
+    async fn setup(&self) -> Result<ToolOutput> {
+        chromium_start_controlled().await?;
+        Ok(attach_browser_metadata(
+            chromium_status().await?,
+            self.id(),
+            "chromium",
+        ))
+    }
+
+    async fn ensure_ready(&self) -> Result<Option<String>> {
+        if chromium_is_ready().await {
+            return Ok(None);
+        }
+        chromium_start_controlled().await?;
+        if chromium_is_ready().await {
+            return Ok(Some(
+                "Started controlled Chromium for browser automation.".to_string(),
+            ));
+        }
+        anyhow::bail!(
+            "Controlled Chromium/CDP is not responding. Check AGENT_BROWSER_CDP, AGENT_BROWSER_EXECUTABLE_PATH, or run the configured controlled Chrome launcher."
+        )
+    }
+
+    async fn execute(
+        &self,
+        action: &str,
+        input: &BrowserInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput> {
+        Ok(attach_browser_metadata(
+            execute_chromium_action(action, input, ctx).await?,
+            self.id(),
+            "chromium",
         ))
     }
 }
@@ -298,6 +359,24 @@ impl Tool for BrowserTool {
     }
 }
 
+pub(crate) async fn run_cli_action(action: &str) -> Result<ToolOutput> {
+    let ctx = ToolContext {
+        session_id: "browser-cli".to_string(),
+        message_id: "browser-cli".to_string(),
+        tool_call_id: "browser-cli".to_string(),
+        working_dir: std::env::current_dir().ok(),
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: super::ToolExecutionMode::Direct,
+    };
+
+    match action {
+        "status" => CHROMIUM_PROVIDER.status(&ctx).await,
+        "setup" => CHROMIUM_PROVIDER.setup().await,
+        other => anyhow::bail!("Unknown browser action: {}", other),
+    }
+}
+
 fn prepend_setup_message(mut output: ToolOutput, message: &str) -> ToolOutput {
     output.output = format!("{}\n\n{}", message, output.output);
     if output.title.is_none() {
@@ -340,14 +419,427 @@ fn attach_browser_metadata(
 
 fn resolve_provider(browser: Option<&str>) -> Result<&'static dyn BrowserProvider> {
     let browser = browser.unwrap_or("auto");
+    if CHROMIUM_PROVIDER.supported_browsers().contains(&browser) {
+        return Ok(&CHROMIUM_PROVIDER);
+    }
     if FIREFOX_PROVIDER.supported_browsers().contains(&browser) {
         return Ok(&FIREFOX_PROVIDER);
     }
 
     anyhow::bail!(
-        "Browser backend '{}' is not wired into the built-in browser tool yet. Use auto/firefox for now.",
+        "Browser backend '{}' is not wired into the built-in browser tool yet. Use auto/chromium/chrome or firefox.",
         browser
     )
+}
+
+fn chromium_cdp_base_url() -> String {
+    let raw = std::env::var("AGENT_BROWSER_CDP").unwrap_or_else(|_| "9222".to_string());
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        raw.trim_end_matches('/').to_string()
+    } else if raw.contains(':') {
+        format!("http://{}", raw.trim_end_matches('/'))
+    } else {
+        format!("http://127.0.0.1:{}", raw.trim())
+    }
+}
+
+async fn chromium_is_ready() -> bool {
+    reqwest::get(format!("{}/json/version", chromium_cdp_base_url()))
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+async fn chromium_status() -> Result<ToolOutput> {
+    let base = chromium_cdp_base_url();
+    let version_resp = reqwest::get(format!("{}/json/version", base)).await;
+    let ready = version_resp
+        .as_ref()
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+    let version_json = match version_resp {
+        Ok(resp) if resp.status().is_success() => resp.json::<Value>().await.unwrap_or(Value::Null),
+        _ => Value::Null,
+    };
+    let profile = std::env::var("AGENT_BROWSER_PROFILE").unwrap_or_default();
+    let executable = std::env::var("AGENT_BROWSER_EXECUTABLE_PATH").unwrap_or_default();
+    let tabs = if ready {
+        chromium_tabs().await.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let body = if ready {
+        format!(
+            "Controlled Chromium/CDP is responding at {}.\nTabs: {}\nProfile: {}\nExecutable: {}",
+            base,
+            tabs.len(),
+            if profile.is_empty() {
+                "unknown"
+            } else {
+                &profile
+            },
+            if executable.is_empty() {
+                "unknown"
+            } else {
+                &executable
+            },
+        )
+    } else {
+        format!(
+            "Controlled Chromium/CDP is not responding at {}. Use action='setup' to start the configured controlled Chromium launcher.",
+            base
+        )
+    };
+
+    Ok(ToolOutput::new(body).with_title("browser status").with_metadata(json!({
+        "ready": ready,
+        "responding": ready,
+        "setup_complete": ready,
+        "binary_installed": !executable.is_empty() && std::path::Path::new(&executable).exists(),
+        "compatible": ready,
+        "backend": "chromium_cdp",
+        "browser": "chromium",
+        "cdp_base_url": base,
+        "profile": profile,
+        "executable": executable,
+        "version": version_json,
+        "tabs": tabs,
+    })))
+}
+
+async fn chromium_start_controlled() -> Result<()> {
+    let script = std::env::var("AGENT_BROWSER_LAUNCHER").unwrap_or_else(|_| {
+        "/data/projects/systeembeheer/chrome-agent-browser/start-controlled-chrome.sh".to_string()
+    });
+    if !std::path::Path::new(&script).exists() {
+        anyhow::bail!("Controlled Chromium launcher not found: {}", script);
+    }
+    let mut command = tokio::process::Command::new(script);
+    command.arg("about:blank");
+    command.stdin(std::process::Stdio::null());
+    command.stdout(std::process::Stdio::null());
+    command.stderr(std::process::Stdio::null());
+    let _child = command
+        .spawn()
+        .context("Failed to start controlled Chromium launcher")?;
+    for _ in 0..40 {
+        if chromium_is_ready().await {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    Ok(())
+}
+
+async fn chromium_tabs() -> Result<Vec<Value>> {
+    let tabs: Vec<Value> = reqwest::get(format!("{}/json/list", chromium_cdp_base_url()))
+        .await?
+        .json()
+        .await?;
+    Ok(tabs
+        .into_iter()
+        .filter(|tab| tab.get("type").and_then(|v| v.as_str()) == Some("page"))
+        .collect())
+}
+
+async fn chromium_target(input: &BrowserInput) -> Result<Value> {
+    let tabs = chromium_tabs().await?;
+    if tabs.is_empty() {
+        anyhow::bail!("No Chromium page targets are available via CDP");
+    }
+    let idx = input.tab_id.unwrap_or(0).max(0) as usize;
+    tabs.get(idx)
+        .cloned()
+        .or_else(|| tabs.first().cloned())
+        .ok_or_else(|| anyhow::anyhow!("No Chromium page targets are available via CDP"))
+}
+
+async fn chromium_new_tab(url: Option<&str>) -> Result<Value> {
+    let target_url = url.unwrap_or("about:blank");
+    let encoded = urlencoding::encode(target_url);
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(format!("{}/json/new?{}", chromium_cdp_base_url(), encoded))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Failed to create Chromium tab: HTTP {}", resp.status());
+    }
+    Ok(resp.json::<Value>().await?)
+}
+
+async fn chromium_activate(id: &str) -> Result<()> {
+    let _ = reqwest::get(format!("{}/json/activate/{}", chromium_cdp_base_url(), id)).await?;
+    Ok(())
+}
+
+async fn cdp_call(ws_url: &str, method: &str, params: Value) -> Result<Value> {
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await?;
+    let id = 1_i64;
+    ws.send(Message::Text(
+        json!({"id": id, "method": method, "params": params}).to_string(),
+    ))
+    .await?;
+    while let Some(msg) = ws.next().await {
+        let msg = msg?;
+        if !msg.is_text() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(msg.to_text()?)?;
+        if value.get("id").and_then(|v| v.as_i64()) == Some(id) {
+            if let Some(error) = value.get("error") {
+                anyhow::bail!("CDP {} failed: {}", method, error);
+            }
+            return Ok(value.get("result").cloned().unwrap_or(Value::Null));
+        }
+    }
+    anyhow::bail!("CDP {} returned no response", method)
+}
+
+async fn cdp_eval(target: &Value, expression: String, await_promise: bool) -> Result<Value> {
+    let ws = target
+        .get("webSocketDebuggerUrl")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Chromium target has no webSocketDebuggerUrl"))?;
+    let result = cdp_call(
+        ws,
+        "Runtime.evaluate",
+        json!({
+            "expression": expression,
+            "awaitPromise": await_promise,
+            "returnByValue": true,
+        }),
+    )
+    .await?;
+    let remote = result.get("result").cloned().unwrap_or(Value::Null);
+    if let Some(exception) = result.get("exceptionDetails") {
+        anyhow::bail!("JavaScript evaluation failed: {}", exception);
+    }
+    Ok(json!({
+        "result": remote.get("value").cloned().unwrap_or(Value::Null),
+        "type": remote.get("type").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+fn js_string(value: &str) -> Result<String> {
+    Ok(serde_json::to_string(value)?)
+}
+
+async fn execute_chromium_action(
+    action: &str,
+    input: &BrowserInput,
+    _ctx: &ToolContext,
+) -> Result<ToolOutput> {
+    match action {
+        "list_tabs" => {
+            let tabs = chromium_tabs().await?;
+            return Ok(ToolOutput::new(serde_json::to_string_pretty(&tabs)?)
+                .with_title("browser list_tabs")
+                .with_metadata(json!({"tabs": tabs})));
+        }
+        "new_tab" => {
+            let tab = chromium_new_tab(input.url.as_deref()).await?;
+            return Ok(ToolOutput::new(serde_json::to_string_pretty(&tab)?)
+                .with_title("browser new_tab")
+                .with_metadata(tab));
+        }
+        "select_tab" => {
+            let target = chromium_target(input).await?;
+            if let Some(id) = target.get("id").and_then(|v| v.as_str()) {
+                chromium_activate(id).await?;
+            }
+            return Ok(ToolOutput::new(serde_json::to_string_pretty(&target)?)
+                .with_title("browser select_tab")
+                .with_metadata(target));
+        }
+        "get_active_tab" => {
+            let target = chromium_target(input).await?;
+            return Ok(ToolOutput::new(serde_json::to_string_pretty(&target)?)
+                .with_title("browser get_active_tab")
+                .with_metadata(target));
+        }
+        _ => {}
+    }
+
+    let target = chromium_target(input).await?;
+    let title = format!("browser {}", action);
+    let result = match action {
+        "open" => {
+            if input.new_tab.unwrap_or(false) {
+                chromium_new_tab(input.url.as_deref()).await?
+            } else {
+                let url = input
+                    .url
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("url is required for open"))?;
+                cdp_eval(
+                    &target,
+                    format!("location.href = {}; true", js_string(url)?),
+                    false,
+                )
+                .await?
+            }
+        }
+        "snapshot" | "get_content" => {
+            let fmt = input.format.as_deref().unwrap_or(if action == "snapshot" {
+                "annotated"
+            } else {
+                "text"
+            });
+            let script = match fmt {
+                "html" => "document.documentElement.outerHTML",
+                "title" => "document.title + '\\n' + location.href",
+                _ => {
+                    "document.title + '\\n' + location.href + '\\n\\n' + (document.body ? document.body.innerText : '')"
+                }
+            };
+            let eval = cdp_eval(&target, script.to_string(), false).await?;
+            json!({"content": eval.get("result").cloned().unwrap_or(Value::Null)})
+        }
+        "interactables" => {
+            let script = r#"Array.from(document.querySelectorAll('a,button,input,textarea,select,[role=button],[tabindex]')).slice(0,100).map((el, i) => ({index:i, tag:el.tagName, type:el.getAttribute('role') || el.type || 'element', text:(el.innerText || el.value || el.ariaLabel || el.name || el.id || '').trim().slice(0,120), selector: el.id ? '#' + CSS.escape(el.id) : el.tagName.toLowerCase() + ':nth-of-type(' + (Array.from(el.parentElement ? el.parentElement.children : []).filter(e => e.tagName === el.tagName).indexOf(el) + 1) + ')'}))"#;
+            let eval = cdp_eval(&target, script.to_string(), false).await?;
+            json!({"elements": eval.get("result").cloned().unwrap_or(Value::Null)})
+        }
+        "click" => {
+            let expr = if let Some(selector) = &input.selector {
+                format!(
+                    "(() => {{ const el = document.querySelector({}); if (!el) throw new Error('selector not found'); el.click(); return true; }})()",
+                    js_string(selector)?
+                )
+            } else if let Some(text) = &input.text {
+                format!(
+                    "(() => {{ const needle = {}; const el = Array.from(document.querySelectorAll('a,button,input,[role=button]')).find(e => (e.innerText || e.value || '').includes(needle)); if (!el) throw new Error('text not found'); el.click(); return true; }})()",
+                    js_string(text)?
+                )
+            } else {
+                format!(
+                    "(() => {{ const el = document.elementFromPoint({}, {}); if (!el) throw new Error('point not found'); el.click(); return true; }})()",
+                    input.x.unwrap_or(0.0),
+                    input.y.unwrap_or(0.0)
+                )
+            };
+            cdp_eval(&target, expr, false).await?
+        }
+        "type" => {
+            let text = input
+                .text
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("text is required for type"))?;
+            let selector = input.selector.as_deref().unwrap_or(":focus");
+            let expr = format!(
+                "(() => {{ const el = document.querySelector({}); if (!el) throw new Error('selector not found'); el.focus(); if ({}) el.value = ''; el.value = (el.value || '') + {}; el.dispatchEvent(new Event('input', {{bubbles:true}})); if ({}) {{ el.form ? el.form.requestSubmit() : el.dispatchEvent(new KeyboardEvent('keydown', {{key:'Enter', bubbles:true}})); }} return true; }})()",
+                js_string(selector)?,
+                input.clear.unwrap_or(false),
+                js_string(text)?,
+                input.submit.unwrap_or(false)
+            );
+            cdp_eval(&target, expr, false).await?
+        }
+        "fill_form" => {
+            let fields = serde_json::to_string(
+                input
+                    .fields
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("fields are required for fill_form"))?,
+            )?;
+            let expr = format!(
+                "(() => {{ const fields = {}; for (const f of fields) {{ const el = document.querySelector(f.selector); if (!el) throw new Error('selector not found: ' + f.selector); if (typeof f.checked === 'boolean') el.checked = f.checked; if (f.value !== undefined) el.value = f.value; el.dispatchEvent(new Event('input', {{bubbles:true}})); el.dispatchEvent(new Event('change', {{bubbles:true}})); }} return true; }})()",
+                fields
+            );
+            cdp_eval(&target, expr, false).await?
+        }
+        "select" => {
+            let selector = input
+                .selector
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("selector is required for select"))?;
+            let value = input
+                .text
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("text is required for select"))?;
+            let expr = format!(
+                "(() => {{ const el = document.querySelector({}); if (!el) throw new Error('selector not found'); el.value = {}; el.dispatchEvent(new Event('change', {{bubbles:true}})); return true; }})()",
+                js_string(selector)?,
+                js_string(value)?
+            );
+            cdp_eval(&target, expr, false).await?
+        }
+        "wait" => {
+            let timeout = input.timeout_ms.unwrap_or(10_000);
+            let selector = input.selector.as_deref().unwrap_or("");
+            let text = input
+                .text
+                .as_deref()
+                .or(input.contains.as_deref())
+                .unwrap_or("");
+            let expr = format!(
+                r#"new Promise((resolve, reject) => {{ const deadline = Date.now() + {}; const selector = {}; const text = {}; const tick = () => {{ const ok = (selector && document.querySelector(selector)) || (text && document.body && document.body.innerText.includes(text)); if (ok) resolve(true); else if (Date.now() > deadline) reject(new Error('wait timeout')); else setTimeout(tick, 100); }}; tick(); }})"#,
+                timeout,
+                js_string(selector)?,
+                js_string(text)?
+            );
+            cdp_eval(&target, expr, true).await?
+        }
+        "eval" => {
+            let script = input
+                .script
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("script is required for eval"))?;
+            cdp_eval(&target, script.to_string(), true).await?
+        }
+        "scroll" => {
+            let x = input.x.unwrap_or(0.0);
+            let y = input.y.unwrap_or(800.0);
+            let expr = if let Some(selector) = &input.selector {
+                format!(
+                    "(() => {{ const el = document.querySelector({}); if (!el) throw new Error('selector not found'); el.scrollIntoView({{behavior:{}, block:'center'}}); return true; }})()",
+                    js_string(selector)?,
+                    js_string(input.behavior.as_deref().unwrap_or("auto"))?
+                )
+            } else {
+                format!("window.scrollBy({}, {}); true", x, y)
+            };
+            cdp_eval(&target, expr, false).await?
+        }
+        "press" => {
+            let script = build_press_script(input.key.as_deref(), input.selector.as_deref())?;
+            cdp_eval(&target, script, false).await?
+        }
+        "screenshot" => {
+            let ws = target
+                .get("webSocketDebuggerUrl")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Chromium target has no webSocketDebuggerUrl"))?;
+            let capture = cdp_call(
+                ws,
+                "Page.captureScreenshot",
+                json!({"format":"png", "fromSurface": true}),
+            )
+            .await?;
+            let data = capture.get("data").and_then(|v| v.as_str()).unwrap_or("");
+            let mut out = ToolOutput::new("Captured browser screenshot from controlled Chromium.")
+                .with_title(title)
+                .with_metadata(capture.clone());
+            if !data.is_empty() {
+                out = out.with_labeled_image(
+                    "image/png",
+                    data.to_string(),
+                    "browser screenshot".to_string(),
+                );
+            }
+            return Ok(out);
+        }
+        "list_frames" => json!({"frames": []}),
+        "upload" => anyhow::bail!("upload is not supported by the Chromium CDP backend yet"),
+        "provider_command" => {
+            anyhow::bail!("provider_command is only supported by provider-specific browser bridges")
+        }
+        other => anyhow::bail!("Unsupported browser action for Chromium CDP: {}", other),
+    };
+
+    Ok(render_browser_output(action, title, result))
 }
 
 async fn firefox_status(

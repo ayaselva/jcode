@@ -173,16 +173,18 @@ fn schema_exposes_advanced_browser_fields() {
 }
 
 #[test]
-fn resolve_provider_accepts_auto_and_firefox() {
+fn resolve_provider_accepts_auto_chromium_chrome_and_firefox() {
     assert!(resolve_provider(Some("auto")).is_ok());
+    assert!(resolve_provider(Some("chromium")).is_ok());
+    assert!(resolve_provider(Some("chrome")).is_ok());
     assert!(resolve_provider(Some("firefox")).is_ok());
 }
 
 #[test]
 fn resolve_provider_rejects_unsupported_browser() {
-    let err = resolve_provider(Some("chrome"))
+    let err = resolve_provider(Some("safari"))
         .err()
-        .expect("chrome should not resolve yet");
+        .expect("safari should not resolve yet");
     assert!(
         err.to_string()
             .contains("not wired into the built-in browser tool")

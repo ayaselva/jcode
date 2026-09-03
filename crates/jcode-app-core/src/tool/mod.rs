@@ -49,6 +49,10 @@ pub use jcode_tool_core::{StdinInputRequest, Tool, ToolContext, ToolExecutionMod
 pub use jcode_tool_types::{ToolImage, ToolOutput};
 pub(crate) use session_search::spawn_recent_index_warmup;
 
+pub async fn run_browser_cli_action(action: &str) -> Result<ToolOutput> {
+    browser::run_cli_action(action).await
+}
+
 #[derive(Clone, Debug, Default)]
 struct SessionToolPolicy {
     allowed_tools: Option<HashSet<String>>,

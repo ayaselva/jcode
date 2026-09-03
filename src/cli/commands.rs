@@ -8,7 +8,7 @@ use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 
-use crate::{browser, gateway, memory, session, storage, tui};
+use crate::{gateway, memory, session, storage, tui};
 
 use super::{output::terminal_title, terminal::init_tui_runtime};
 
@@ -1906,57 +1906,13 @@ pub use gateway::{detect_tailscale_dns_name, parse_tailscale_dns_name, resolve_c
 
 pub async fn run_browser(action: &str) -> Result<()> {
     match action {
-        "setup" => browser::run_setup_command().await?,
+        "setup" => {
+            let output = crate::tool::run_browser_cli_action("setup").await?;
+            println!("{}", output.output);
+        }
         "status" => {
-            let status = browser::ensure_browser_ready_noninteractive().await?;
-            println!("Browser automation");
-            println!("  backend: {}", status.backend);
-            println!("  browser: {}", status.browser);
-            println!(
-                "  binary: {}",
-                if status.binary_installed {
-                    "installed"
-                } else {
-                    "missing"
-                }
-            );
-            println!(
-                "  setup: {}",
-                if status.setup_complete {
-                    "complete"
-                } else {
-                    "not complete"
-                }
-            );
-            println!(
-                "  bridge: {}",
-                if status.responding {
-                    "responding"
-                } else {
-                    "not responding"
-                }
-            );
-            println!(
-                "  compatibility: {}",
-                if status.compatible {
-                    "ok"
-                } else {
-                    "extension/bridge mismatch"
-                }
-            );
-            if !status.missing_actions.is_empty() {
-                println!("  missing actions: {}", status.missing_actions.join(", "));
-            }
-
-            if status.ready {
-                println!("\nBuilt-in browser tool is ready.");
-            } else if status.responding && !status.compatible {
-                println!(
-                    "\nThe browser bridge is connected, but the installed Firefox extension is out of date for this jcode build. Run `jcode browser setup` to repair or update it."
-                );
-            } else {
-                println!("\nRun `jcode browser setup` to install or repair it.");
-            }
+            let output = crate::tool::run_browser_cli_action("status").await?;
+            println!("{}", output.output);
         }
         other => {
             eprintln!("Unknown browser action: {}", other);
