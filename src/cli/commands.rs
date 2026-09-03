@@ -1,7 +1,8 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::ToSocketAddrs;
@@ -1904,23 +1905,105 @@ pub fn run_pair_command(list: bool, revoke: Option<String>) -> Result<()> {
 
 pub use gateway::{detect_tailscale_dns_name, parse_tailscale_dns_name, resolve_connect_host};
 
-pub async fn run_browser(action: &str) -> Result<()> {
-    match action {
-        "setup" => {
-            let output = crate::tool::run_browser_cli_action("setup").await?;
-            println!("{}", output.output);
-        }
-        "status" => {
-            let output = crate::tool::run_browser_cli_action("status").await?;
-            println!("{}", output.output);
-        }
-        other => {
-            eprintln!("Unknown browser action: {}", other);
-            eprintln!("Available: setup, status");
-            std::process::exit(1);
-        }
+pub(crate) async fn run_browser(args: &crate::cli::args::BrowserCliArgs) -> Result<()> {
+    let input = browser_cli_input(args)?;
+    let output = crate::tool::run_browser_cli_value(input).await?;
+    if args.json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "title": output.title,
+                "output": output.output,
+                "metadata": output.metadata,
+                "images": output.images.len(),
+            }))?
+        );
+    } else {
+        println!("{}", output.output);
     }
     Ok(())
+}
+
+fn browser_cli_input(args: &crate::cli::args::BrowserCliArgs) -> Result<Value> {
+    let mut map = if let Some(raw) = &args.params {
+        let parsed: Value = serde_json::from_str(raw).context("--params must be a JSON object")?;
+        parsed
+            .as_object()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("--params must be a JSON object"))?
+    } else {
+        Map::new()
+    };
+
+    let action = normalize_browser_cli_action(&args.action);
+    map.insert("action".into(), json!(action));
+    insert_opt(&mut map, "browser", &args.browser);
+    insert_opt(&mut map, "url", &args.url);
+    insert_opt(&mut map, "selector", &args.selector);
+    insert_opt(&mut map, "text", &args.text);
+    insert_opt(&mut map, "contains", &args.contains);
+    insert_opt(&mut map, "script", &args.script);
+    insert_opt(&mut map, "key", &args.key);
+    insert_opt(&mut map, "provider_action", &args.provider_action);
+    insert_opt(&mut map, "path", &args.path);
+    insert_opt(&mut map, "format", &args.format);
+    if let Some(tab_id) = args.tab_id {
+        map.insert("tab_id".into(), json!(tab_id));
+    }
+    if let Some(x) = args.x {
+        map.insert("x".into(), json!(x));
+    }
+    if let Some(y) = args.y {
+        map.insert("y".into(), json!(y));
+    }
+    if let Some(timeout_ms) = args.timeout_ms {
+        map.insert("timeout_ms".into(), json!(timeout_ms));
+    }
+    if args.new_tab {
+        map.insert("new_tab".into(), json!(true));
+    }
+    if args.clear {
+        map.insert("clear".into(), json!(true));
+    }
+    if args.submit {
+        map.insert("submit".into(), json!(true));
+    }
+    if !args.fields.is_empty() {
+        map.insert(
+            "fields".into(),
+            Value::Array(parse_browser_fields(&args.fields)?),
+        );
+    }
+
+    Ok(Value::Object(map))
+}
+
+fn normalize_browser_cli_action(action: &str) -> String {
+    match action.replace('-', "_").as_str() {
+        "tabs" => "list_tabs",
+        "active_tab" => "get_active_tab",
+        "content" => "get_content",
+        other => other,
+    }
+    .to_string()
+}
+
+fn insert_opt(map: &mut Map<String, Value>, key: &str, value: &Option<String>) {
+    if let Some(value) = value {
+        map.insert(key.to_string(), json!(value));
+    }
+}
+
+fn parse_browser_fields(fields: &[String]) -> Result<Vec<Value>> {
+    fields
+        .iter()
+        .map(|field| {
+            let (selector, value) = field
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("--field must use selector=value: {field}"))?;
+            Ok(json!({ "selector": selector, "value": value }))
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize)]

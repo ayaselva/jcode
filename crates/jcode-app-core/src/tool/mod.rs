@@ -53,6 +53,10 @@ pub async fn run_browser_cli_action(action: &str) -> Result<ToolOutput> {
     browser::run_cli_action(action).await
 }
 
+pub async fn run_browser_cli_value(input: Value) -> Result<ToolOutput> {
+    browser::run_cli_value(input).await
+}
+
 #[derive(Clone, Debug, Default)]
 struct SessionToolPolicy {
     allowed_tools: Option<HashSet<String>>,

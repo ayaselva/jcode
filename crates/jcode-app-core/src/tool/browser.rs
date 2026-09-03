@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 
 pub struct BrowserTool;
 
@@ -252,7 +252,7 @@ impl Tool for BrowserTool {
             "browser".into(),
             json!({
                 "type": "string",
-                "enum": ["auto", "firefox", "chrome", "safari", "edge"],
+                "enum": ["auto", "firefox", "chrome", "chromium", "safari", "edge"],
                 "description": "Browser."
             }),
         );
@@ -360,6 +360,10 @@ impl Tool for BrowserTool {
 }
 
 pub(crate) async fn run_cli_action(action: &str) -> Result<ToolOutput> {
+    run_cli_value(json!({ "action": action })).await
+}
+
+pub(crate) async fn run_cli_value(input: Value) -> Result<ToolOutput> {
     let ctx = ToolContext {
         session_id: "browser-cli".to_string(),
         message_id: "browser-cli".to_string(),
@@ -369,12 +373,7 @@ pub(crate) async fn run_cli_action(action: &str) -> Result<ToolOutput> {
         graceful_shutdown_signal: None,
         execution_mode: super::ToolExecutionMode::Direct,
     };
-
-    match action {
-        "status" => CHROMIUM_PROVIDER.status(&ctx).await,
-        "setup" => CHROMIUM_PROVIDER.setup().await,
-        other => anyhow::bail!("Unknown browser action: {}", other),
-    }
+    BrowserTool::new().execute(input, ctx).await
 }
 
 fn prepend_setup_message(mut output: ToolOutput, message: &str) -> ToolOutput {
@@ -574,9 +573,14 @@ async fn chromium_activate(id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cdp_call(ws_url: &str, method: &str, params: Value) -> Result<Value> {
-    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await?;
-    let id = 1_i64;
+async fn cdp_call_on(
+    ws: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    next_id: &mut i64,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    let id = *next_id;
+    *next_id += 1;
     ws.send(Message::Text(
         json!({"id": id, "method": method, "params": params}).to_string(),
     ))
@@ -595,6 +599,12 @@ async fn cdp_call(ws_url: &str, method: &str, params: Value) -> Result<Value> {
         }
     }
     anyhow::bail!("CDP {} returned no response", method)
+}
+
+async fn cdp_call(ws_url: &str, method: &str, params: Value) -> Result<Value> {
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await?;
+    let mut next_id = 1_i64;
+    cdp_call_on(&mut ws, &mut next_id, method, params).await
 }
 
 async fn cdp_eval(target: &Value, expression: String, await_promise: bool) -> Result<Value> {
@@ -624,6 +634,13 @@ async fn cdp_eval(target: &Value, expression: String, await_promise: bool) -> Re
 
 fn js_string(value: &str) -> Result<String> {
     Ok(serde_json::to_string(value)?)
+}
+
+fn chromium_ws_url(target: &Value) -> Result<&str> {
+    target
+        .get("webSocketDebuggerUrl")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Chromium target has no webSocketDebuggerUrl"))
 }
 
 async fn execute_chromium_action(
@@ -673,12 +690,17 @@ async fn execute_chromium_action(
                     .url
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("url is required for open"))?;
-                cdp_eval(
-                    &target,
-                    format!("location.href = {}; true", js_string(url)?),
-                    false,
-                )
-                .await?
+                let ws = chromium_ws_url(&target)?;
+                cdp_call(ws, "Page.navigate", json!({"url": url})).await?;
+                if input.wait.unwrap_or(true) {
+                    let timeout = input.timeout_ms.unwrap_or(30_000);
+                    let expr = format!(
+                        r#"new Promise((resolve, reject) => {{ const deadline = Date.now() + {}; const tick = () => {{ if (document.readyState === 'complete') resolve(true); else if (Date.now() > deadline) reject(new Error('navigation timeout')); else setTimeout(tick, 100); }}; tick(); }})"#,
+                        timeout
+                    );
+                    cdp_eval(&target, expr, true).await?;
+                }
+                json!({"ok": true, "url": url})
             }
         }
         "snapshot" | "get_content" => {
@@ -804,14 +826,39 @@ async fn execute_chromium_action(
             cdp_eval(&target, expr, false).await?
         }
         "press" => {
-            let script = build_press_script(input.key.as_deref(), input.selector.as_deref())?;
+            let key = input
+                .key
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("key is required for press"))?;
+            let selector_literal = input
+                .selector
+                .as_deref()
+                .map(serde_json::to_string)
+                .transpose()?;
+            let selector_expr = selector_literal
+                .map(|s| format!("document.querySelector({})", s))
+                .unwrap_or_else(|| "null".to_string());
+            let key_literal = serde_json::to_string(key)?;
+            let script = format!(
+                r#"(() => {{
+  const target = {selector_expr} || document.activeElement || document.body;
+  if (!target) throw new Error('No target available for key press');
+  if (typeof target.focus === 'function') target.focus();
+  const key = {key_literal};
+  const eventInit = {{ key, bubbles: true, cancelable: true }};
+  target.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+  target.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+  if (key === 'Enter' && target.form && typeof target.form.requestSubmit === 'function') {{
+    target.form.requestSubmit();
+  }}
+  target.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+  return {{ pressed: true, key, tag: target.tagName || null }};
+}})()"#
+            );
             cdp_eval(&target, script, false).await?
         }
         "screenshot" => {
-            let ws = target
-                .get("webSocketDebuggerUrl")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Chromium target has no webSocketDebuggerUrl"))?;
+            let ws = chromium_ws_url(&target)?;
             let capture = cdp_call(
                 ws,
                 "Page.captureScreenshot",
@@ -831,10 +878,62 @@ async fn execute_chromium_action(
             }
             return Ok(out);
         }
-        "list_frames" => json!({"frames": []}),
-        "upload" => anyhow::bail!("upload is not supported by the Chromium CDP backend yet"),
+        "list_frames" => {
+            let ws = chromium_ws_url(&target)?;
+            cdp_call(ws, "Page.getFrameTree", json!({})).await?
+        }
+        "upload" => {
+            let selector = input
+                .selector
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("selector is required for upload"))?;
+            let path = input
+                .path
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("path is required for upload"))?;
+            let ws = chromium_ws_url(&target)?;
+            let (mut ws_conn, _) = tokio_tungstenite::connect_async(ws).await?;
+            let mut next_id = 1_i64;
+            cdp_call_on(&mut ws_conn, &mut next_id, "DOM.enable", json!({})).await?;
+            let document =
+                cdp_call_on(&mut ws_conn, &mut next_id, "DOM.getDocument", json!({})).await?;
+            let root_node_id = document
+                .get("root")
+                .and_then(|root| root.get("nodeId"))
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("CDP DOM.getDocument did not return a root node"))?;
+            let queried = cdp_call_on(
+                &mut ws_conn,
+                &mut next_id,
+                "DOM.querySelector",
+                json!({"nodeId": root_node_id, "selector": selector}),
+            )
+            .await?;
+            let node_id = queried
+                .get("nodeId")
+                .and_then(|v| v.as_i64())
+                .filter(|id| *id != 0)
+                .ok_or_else(|| anyhow::anyhow!("upload selector not found: {}", selector))?;
+            cdp_call_on(
+                &mut ws_conn,
+                &mut next_id,
+                "DOM.setFileInputFiles",
+                json!({"nodeId": node_id, "files": [path]}),
+            )
+            .await?;
+            json!({"ok": true, "selector": selector, "path": path})
+        }
         "provider_command" => {
-            anyhow::bail!("provider_command is only supported by provider-specific browser bridges")
+            let method = input.provider_action.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("provider_action is required and is used as the CDP method")
+            })?;
+            let ws = chromium_ws_url(&target)?;
+            cdp_call(
+                ws,
+                method,
+                input.params.clone().unwrap_or_else(|| json!({})),
+            )
+            .await?
         }
         other => anyhow::bail!("Unsupported browser action for Chromium CDP: {}", other),
     };

@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 
 use super::provider_init::ProviderChoice;
 
@@ -366,12 +366,8 @@ pub(crate) enum Command {
     /// Install a launcher so jcode appears in your app launcher
     SetupLauncher,
 
-    /// Browser automation setup and status
-    Browser {
-        /// Action (setup, status)
-        #[arg(default_value = "setup")]
-        action: String,
-    },
+    /// Browser automation via the default controlled Chromium/CDP backend
+    Browser(BrowserCliArgs),
 
     /// Replay a saved session in the TUI
     Replay {
@@ -529,6 +525,93 @@ pub(crate) enum Command {
         #[arg(long, conflicts_with = "once")]
         json: bool,
     },
+}
+
+#[derive(ClapArgs, Debug, Clone)]
+pub(crate) struct BrowserCliArgs {
+    /// Action: status, setup, list-tabs, new-tab, select-tab, active-tab, open, snapshot, content, interactables, click, type, fill-form, select, wait, screenshot, eval, scroll, press
+    #[arg(default_value = "status")]
+    pub(crate) action: String,
+
+    /// Browser backend: auto/chromium/chrome/firefox
+    #[arg(long)]
+    pub(crate) browser: Option<String>,
+
+    /// URL for open/new-tab
+    #[arg(long)]
+    pub(crate) url: Option<String>,
+
+    /// Tab index for target selection
+    #[arg(long = "tab")]
+    pub(crate) tab_id: Option<i64>,
+
+    /// CSS selector for click/type/wait/scroll/select
+    #[arg(long)]
+    pub(crate) selector: Option<String>,
+
+    /// Text/value for type/click/wait/select
+    #[arg(long)]
+    pub(crate) text: Option<String>,
+
+    /// Substring for wait
+    #[arg(long)]
+    pub(crate) contains: Option<String>,
+
+    /// JavaScript expression for eval
+    #[arg(long)]
+    pub(crate) script: Option<String>,
+
+    /// Keyboard key for press
+    #[arg(long)]
+    pub(crate) key: Option<String>,
+
+    /// Provider/native action, used as the CDP method for provider-command
+    #[arg(long = "provider-action")]
+    pub(crate) provider_action: Option<String>,
+
+    /// Local file path for upload
+    #[arg(long)]
+    pub(crate) path: Option<String>,
+
+    /// X coordinate or scroll delta
+    #[arg(long)]
+    pub(crate) x: Option<f64>,
+
+    /// Y coordinate or scroll delta
+    #[arg(long)]
+    pub(crate) y: Option<f64>,
+
+    /// Output format for content: text/html/title/annotated
+    #[arg(long)]
+    pub(crate) format: Option<String>,
+
+    /// Timeout in milliseconds for wait/open
+    #[arg(long)]
+    pub(crate) timeout_ms: Option<u64>,
+
+    /// Open in a new tab when supported
+    #[arg(long)]
+    pub(crate) new_tab: bool,
+
+    /// Clear target input before typing
+    #[arg(long)]
+    pub(crate) clear: bool,
+
+    /// Submit the form after typing
+    #[arg(long)]
+    pub(crate) submit: bool,
+
+    /// Repeated form field in selector=value format for fill-form
+    #[arg(long = "field")]
+    pub(crate) fields: Vec<String>,
+
+    /// Raw JSON object merged into the browser tool input for advanced use. For provider-command, include nested params or use --provider-action.
+    #[arg(long)]
+    pub(crate) params: Option<String>,
+
+    /// Emit full JSON metadata instead of formatted text
+    #[arg(long = "json")]
+    pub(crate) json_output: bool,
 }
 
 #[derive(Subcommand, Debug)]
