@@ -6,6 +6,7 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 
@@ -13,6 +14,7 @@ pub struct BrowserTool;
 
 static FIREFOX_PROVIDER: FirefoxBridgeProvider = FirefoxBridgeProvider;
 static CHROMIUM_PROVIDER: ChromiumCdpProvider = ChromiumCdpProvider;
+static OBSCURA_PROVIDER: ObscuraCdpProvider = ObscuraCdpProvider;
 
 impl BrowserTool {
     pub fn new() -> Self {
@@ -31,6 +33,8 @@ struct BrowserInput {
     browser: Option<String>,
     #[serde(default)]
     provider_action: Option<String>,
+    #[serde(default)]
+    method: Option<String>,
     #[serde(default)]
     params: Option<Value>,
     #[serde(default)]
@@ -85,6 +89,14 @@ struct BrowserInput {
     scroll_to: Option<ScrollTo>,
 }
 
+impl BrowserInput {
+    fn provider_method(&self) -> Option<&str> {
+        self.provider_action
+            .as_deref()
+            .or_else(|| self.method.as_deref())
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct BrowserField {
     selector: String,
@@ -121,6 +133,86 @@ trait BrowserProvider: Send + Sync {
 struct FirefoxBridgeProvider;
 
 struct ChromiumCdpProvider;
+
+struct ObscuraCdpProvider;
+
+struct ObscuraCdpSession {
+    ws: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    next_id: i64,
+    session_id: String,
+    target_id: String,
+    url: String,
+}
+
+static OBSCURA_CDP_SESSION: OnceLock<tokio::sync::Mutex<Option<ObscuraCdpSession>>> =
+    OnceLock::new();
+
+#[derive(Clone, Copy)]
+enum CdpBackend {
+    Obscura,
+    Chromium,
+}
+
+fn obscura_target_value(target_id: &str, url: &str) -> Value {
+    json!({
+        "description": "",
+        "devtoolsFrontendUrl": "",
+        "id": target_id,
+        "title": "",
+        "type": "page",
+        "url": url,
+        "webSocketDebuggerUrl": format!("ws://127.0.0.1:9333/devtools/page/{target_id}"),
+    })
+}
+
+impl CdpBackend {
+    fn id(self) -> &'static str {
+        match self {
+            CdpBackend::Obscura => "obscura_cdp",
+            CdpBackend::Chromium => "chromium_cdp",
+        }
+    }
+
+    fn browser(self) -> &'static str {
+        match self {
+            CdpBackend::Obscura => "obscura",
+            CdpBackend::Chromium => "chromium",
+        }
+    }
+
+    fn display_name(self) -> &'static str {
+        match self {
+            CdpBackend::Obscura => "Obscura CDP",
+            CdpBackend::Chromium => "Controlled Chromium/CDP",
+        }
+    }
+
+    fn base_url(self) -> String {
+        match self {
+            CdpBackend::Obscura => cdp_url_from_env("OBSCURA_CDP", "OBSCURA_PORT", "9333"),
+            CdpBackend::Chromium => {
+                cdp_url_from_env("AGENT_BROWSER_CDP", "AGENT_BROWSER_PORT", "9222")
+            }
+        }
+    }
+
+    fn executable(self) -> String {
+        match self {
+            CdpBackend::Obscura => std::env::var("OBSCURA_EXECUTABLE")
+                .unwrap_or_else(|_| "/home/maarten/.local/bin/obscura".to_string()),
+            CdpBackend::Chromium => {
+                std::env::var("AGENT_BROWSER_EXECUTABLE_PATH").unwrap_or_default()
+            }
+        }
+    }
+
+    fn profile(self) -> String {
+        match self {
+            CdpBackend::Obscura => std::env::var("OBSCURA_STORAGE_DIR").unwrap_or_default(),
+            CdpBackend::Chromium => std::env::var("AGENT_BROWSER_PROFILE").unwrap_or_default(),
+        }
+    }
+}
 
 #[async_trait]
 impl BrowserProvider for FirefoxBridgeProvider {
@@ -173,32 +265,32 @@ impl BrowserProvider for ChromiumCdpProvider {
     }
 
     fn supported_browsers(&self) -> &'static [&'static str] {
-        &["auto", "chrome", "chromium"]
+        &["chrome", "chromium"]
     }
 
     async fn status(&self, _ctx: &ToolContext) -> Result<ToolOutput> {
         Ok(attach_browser_metadata(
-            chromium_status().await?,
+            cdp_status(CdpBackend::Chromium).await?,
             self.id(),
             "chromium",
         ))
     }
 
     async fn setup(&self) -> Result<ToolOutput> {
-        chromium_start_controlled().await?;
+        cdp_start(CdpBackend::Chromium).await?;
         Ok(attach_browser_metadata(
-            chromium_status().await?,
+            cdp_status(CdpBackend::Chromium).await?,
             self.id(),
             "chromium",
         ))
     }
 
     async fn ensure_ready(&self) -> Result<Option<String>> {
-        if chromium_is_ready().await {
+        if cdp_is_ready(CdpBackend::Chromium).await {
             return Ok(None);
         }
-        chromium_start_controlled().await?;
-        if chromium_is_ready().await {
+        cdp_start(CdpBackend::Chromium).await?;
+        if cdp_is_ready(CdpBackend::Chromium).await {
             return Ok(Some(
                 "Started controlled Chromium for browser automation.".to_string(),
             ));
@@ -215,9 +307,65 @@ impl BrowserProvider for ChromiumCdpProvider {
         ctx: &ToolContext,
     ) -> Result<ToolOutput> {
         Ok(attach_browser_metadata(
-            execute_chromium_action(action, input, ctx).await?,
+            execute_cdp_action(CdpBackend::Chromium, action, input, ctx).await?,
             self.id(),
             "chromium",
+        ))
+    }
+}
+
+#[async_trait]
+impl BrowserProvider for ObscuraCdpProvider {
+    fn id(&self) -> &'static str {
+        "obscura_cdp"
+    }
+
+    fn supported_browsers(&self) -> &'static [&'static str] {
+        &["auto", "obscura"]
+    }
+
+    async fn status(&self, _ctx: &ToolContext) -> Result<ToolOutput> {
+        Ok(attach_browser_metadata(
+            cdp_status(CdpBackend::Obscura).await?,
+            self.id(),
+            "obscura",
+        ))
+    }
+
+    async fn setup(&self) -> Result<ToolOutput> {
+        cdp_start(CdpBackend::Obscura).await?;
+        Ok(attach_browser_metadata(
+            cdp_status(CdpBackend::Obscura).await?,
+            self.id(),
+            "obscura",
+        ))
+    }
+
+    async fn ensure_ready(&self) -> Result<Option<String>> {
+        if cdp_is_ready(CdpBackend::Obscura).await {
+            return Ok(None);
+        }
+        cdp_start(CdpBackend::Obscura).await?;
+        if cdp_is_ready(CdpBackend::Obscura).await {
+            return Ok(Some(
+                "Started Obscura CDP server for browser automation.".to_string(),
+            ));
+        }
+        anyhow::bail!(
+            "Obscura CDP is not responding. Check OBSCURA_CDP/OBSCURA_PORT or run `obscura serve --port 9333`."
+        )
+    }
+
+    async fn execute(
+        &self,
+        action: &str,
+        input: &BrowserInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput> {
+        Ok(attach_browser_metadata(
+            execute_cdp_action(CdpBackend::Obscura, action, input, ctx).await?,
+            self.id(),
+            "obscura",
         ))
     }
 }
@@ -243,7 +391,7 @@ impl Tool for BrowserTool {
                     "status", "setup", "list_tabs", "new_tab", "select_tab", "get_active_tab",
                     "list_frames", "open", "snapshot", "get_content", "interactables", "click", "type",
                     "fill_form", "select", "wait", "screenshot", "eval", "scroll", "upload",
-                    "press", "provider_command"
+                    "press", "provider_command", "batch"
                 ],
                 "description": "Action. Check 'status' first; run 'setup' only when the bridge is not ready."
             }),
@@ -252,15 +400,22 @@ impl Tool for BrowserTool {
             "browser".into(),
             json!({
                 "type": "string",
-                "enum": ["auto", "firefox", "chrome", "chromium", "safari", "edge"],
-                "description": "Browser."
+                "enum": ["auto", "obscura", "firefox", "chrome", "chromium", "safari", "edge"],
+                "description": "Browser. auto uses Obscura/CDP on port 9333. chrome/chromium are explicit fallbacks only."
             }),
         );
         properties.insert(
             "provider_action".into(),
             json!({
                 "type": "string",
-                "description": "Provider command name."
+                "description": "Provider command name. For CDP backends this is the CDP method. Alias: method."
+            }),
+        );
+        properties.insert(
+            "method".into(),
+            json!({
+                "type": "string",
+                "description": "Alias for provider_action, intended for CDP provider_command calls."
             }),
         );
         properties.insert(
@@ -347,6 +502,14 @@ impl Tool for BrowserTool {
         match params.action.as_str() {
             "status" => provider.status(&ctx).await,
             "setup" => provider.setup().await,
+            "batch" => {
+                let setup_message = provider.ensure_ready().await?;
+                let output = execute_browser_batch(provider, &params, &ctx).await?;
+                Ok(match setup_message {
+                    Some(message) if !message.is_empty() => prepend_setup_message(output, &message),
+                    _ => output,
+                })
+            }
             other => {
                 let setup_message = provider.ensure_ready().await?;
                 let output = provider.execute(other, &params, &ctx).await?;
@@ -357,6 +520,45 @@ impl Tool for BrowserTool {
             }
         }
     }
+}
+
+async fn execute_browser_batch(
+    provider: &'static dyn BrowserProvider,
+    input: &BrowserInput,
+    ctx: &ToolContext,
+) -> Result<ToolOutput> {
+    let steps = input
+        .params
+        .as_ref()
+        .and_then(|params| params.get("steps"))
+        .and_then(|steps| steps.as_array())
+        .ok_or_else(|| anyhow::anyhow!("params.steps array is required for batch"))?;
+    let mut outputs = Vec::new();
+    for step in steps {
+        let mut step_input: BrowserInput = serde_json::from_value(step.clone())?;
+        if step_input.browser.is_none() {
+            step_input.browser = input.browser.clone();
+        }
+        let action = step_input.action.clone();
+        let output = match action.as_str() {
+            "status" => provider.status(ctx).await?,
+            "setup" => provider.setup().await?,
+            "batch" => anyhow::bail!("Nested browser batch actions are not supported"),
+            other => provider.execute(other, &step_input, ctx).await?,
+        };
+        outputs.push(json!({
+            "action": action,
+            "title": output.title,
+            "output": output.output,
+            "metadata": output.metadata,
+            "images": output.images.len(),
+        }));
+    }
+    Ok(
+        ToolOutput::new(format!("Ran {} browser batch step(s).", outputs.len()))
+            .with_title("browser batch")
+            .with_metadata(json!({"steps": outputs})),
+    )
 }
 
 pub(crate) async fn run_cli_action(action: &str) -> Result<ToolOutput> {
@@ -418,6 +620,9 @@ fn attach_browser_metadata(
 
 fn resolve_provider(browser: Option<&str>) -> Result<&'static dyn BrowserProvider> {
     let browser = browser.unwrap_or("auto");
+    if OBSCURA_PROVIDER.supported_browsers().contains(&browser) {
+        return Ok(&OBSCURA_PROVIDER);
+    }
     if CHROMIUM_PROVIDER.supported_browsers().contains(&browser) {
         return Ok(&CHROMIUM_PROVIDER);
     }
@@ -426,13 +631,15 @@ fn resolve_provider(browser: Option<&str>) -> Result<&'static dyn BrowserProvide
     }
 
     anyhow::bail!(
-        "Browser backend '{}' is not wired into the built-in browser tool yet. Use auto/chromium/chrome or firefox.",
+        "Browser backend '{}' is not wired into the built-in browser tool yet. Use auto/obscura, chromium/chrome, or firefox.",
         browser
     )
 }
 
-fn chromium_cdp_base_url() -> String {
-    let raw = std::env::var("AGENT_BROWSER_CDP").unwrap_or_else(|_| "9222".to_string());
+fn cdp_url_from_env(url_env: &str, port_env: &str, default_port: &str) -> String {
+    let raw = std::env::var(url_env)
+        .or_else(|_| std::env::var(port_env))
+        .unwrap_or_else(|_| default_port.to_string());
     if raw.starts_with("http://") || raw.starts_with("https://") {
         raw.trim_end_matches('/').to_string()
     } else if raw.contains(':') {
@@ -442,15 +649,15 @@ fn chromium_cdp_base_url() -> String {
     }
 }
 
-async fn chromium_is_ready() -> bool {
-    reqwest::get(format!("{}/json/version", chromium_cdp_base_url()))
+async fn cdp_is_ready(backend: CdpBackend) -> bool {
+    reqwest::get(format!("{}/json/version", backend.base_url()))
         .await
         .map(|r| r.status().is_success())
         .unwrap_or(false)
 }
 
-async fn chromium_status() -> Result<ToolOutput> {
-    let base = chromium_cdp_base_url();
+async fn cdp_status(backend: CdpBackend) -> Result<ToolOutput> {
+    let base = backend.base_url();
     let version_resp = reqwest::get(format!("{}/json/version", base)).await;
     let ready = version_resp
         .as_ref()
@@ -460,17 +667,18 @@ async fn chromium_status() -> Result<ToolOutput> {
         Ok(resp) if resp.status().is_success() => resp.json::<Value>().await.unwrap_or(Value::Null),
         _ => Value::Null,
     };
-    let profile = std::env::var("AGENT_BROWSER_PROFILE").unwrap_or_default();
-    let executable = std::env::var("AGENT_BROWSER_EXECUTABLE_PATH").unwrap_or_default();
+    let profile = backend.profile();
+    let executable = backend.executable();
     let tabs = if ready {
-        chromium_tabs().await.unwrap_or_default()
+        cdp_tabs(backend).await.unwrap_or_default()
     } else {
         Vec::new()
     };
 
     let body = if ready {
         format!(
-            "Controlled Chromium/CDP is responding at {}.\nTabs: {}\nProfile: {}\nExecutable: {}",
+            "{} is responding at {}.\nTabs: {}\nStorage/Profile: {}\nExecutable: {}",
+            backend.display_name(),
             base,
             tabs.len(),
             if profile.is_empty() {
@@ -486,8 +694,9 @@ async fn chromium_status() -> Result<ToolOutput> {
         )
     } else {
         format!(
-            "Controlled Chromium/CDP is not responding at {}. Use action='setup' to start the configured controlled Chromium launcher.",
-            base
+            "{} is not responding at {}. Use action='setup' to start it.",
+            backend.display_name(),
+            base,
         )
     };
 
@@ -497,8 +706,8 @@ async fn chromium_status() -> Result<ToolOutput> {
         "setup_complete": ready,
         "binary_installed": !executable.is_empty() && std::path::Path::new(&executable).exists(),
         "compatible": ready,
-        "backend": "chromium_cdp",
-        "browser": "chromium",
+        "backend": backend.id(),
+        "browser": backend.browser(),
         "cdp_base_url": base,
         "profile": profile,
         "executable": executable,
@@ -507,23 +716,53 @@ async fn chromium_status() -> Result<ToolOutput> {
     })))
 }
 
-async fn chromium_start_controlled() -> Result<()> {
-    let script = std::env::var("AGENT_BROWSER_LAUNCHER").unwrap_or_else(|_| {
-        "/data/projects/systeembeheer/chrome-agent-browser/start-controlled-chrome.sh".to_string()
-    });
-    if !std::path::Path::new(&script).exists() {
-        anyhow::bail!("Controlled Chromium launcher not found: {}", script);
+async fn cdp_start(backend: CdpBackend) -> Result<()> {
+    if cdp_is_ready(backend).await {
+        return Ok(());
     }
-    let mut command = tokio::process::Command::new(script);
-    command.arg("about:blank");
+    let mut command = match backend {
+        CdpBackend::Obscura => {
+            let executable = backend.executable();
+            if !std::path::Path::new(&executable).exists() {
+                anyhow::bail!("Obscura executable not found: {}", executable);
+            }
+            let mut command = tokio::process::Command::new(executable);
+            command
+                .arg("serve")
+                .arg("--host")
+                .arg("127.0.0.1")
+                .arg("--port")
+                .arg("9333")
+                .arg("--quiet")
+                .arg("--allow-file-access");
+            if let Ok(storage_dir) = std::env::var("OBSCURA_STORAGE_DIR") {
+                if !storage_dir.is_empty() {
+                    command.arg("--storage-dir").arg(storage_dir);
+                }
+            }
+            command
+        }
+        CdpBackend::Chromium => {
+            let script = std::env::var("AGENT_BROWSER_LAUNCHER").unwrap_or_else(|_| {
+                "/data/projects/systeembeheer/chrome-agent-browser/start-controlled-chrome.sh"
+                    .to_string()
+            });
+            if !std::path::Path::new(&script).exists() {
+                anyhow::bail!("Controlled Chromium launcher not found: {}", script);
+            }
+            let mut command = tokio::process::Command::new(script);
+            command.arg("about:blank");
+            command
+        }
+    };
     command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::null());
     command.stderr(std::process::Stdio::null());
     let _child = command
         .spawn()
-        .context("Failed to start controlled Chromium launcher")?;
+        .with_context(|| format!("Failed to start {}", backend.display_name()))?;
     for _ in 0..40 {
-        if chromium_is_ready().await {
+        if cdp_is_ready(backend).await {
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -531,8 +770,46 @@ async fn chromium_start_controlled() -> Result<()> {
     Ok(())
 }
 
-async fn chromium_tabs() -> Result<Vec<Value>> {
-    let tabs: Vec<Value> = reqwest::get(format!("{}/json/list", chromium_cdp_base_url()))
+async fn cdp_tabs(backend: CdpBackend) -> Result<Vec<Value>> {
+    if matches!(backend, CdpBackend::Obscura) {
+        if let Some(mutex) = OBSCURA_CDP_SESSION.get() {
+            let guard = mutex.lock().await;
+            if let Some(session) = guard.as_ref() {
+                return Ok(vec![obscura_target_value(&session.target_id, &session.url)]);
+            }
+        }
+        let browser_ws = cdp_browser_ws_url(backend).await?;
+        let (mut ws, _) = tokio_tungstenite::connect_async(browser_ws).await?;
+        let mut next_id = 1_i64;
+        let result =
+            cdp_call_on(&mut ws, &mut next_id, None, "Target.getTargets", json!({})).await?;
+        let infos = result
+            .get("targetInfos")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        return Ok(infos
+            .into_iter()
+            .filter(|tab| tab.get("type").and_then(|v| v.as_str()) == Some("page"))
+            .map(|tab| {
+                let target_id = tab
+                    .get("targetId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("page-1");
+                json!({
+                    "description": "",
+                    "devtoolsFrontendUrl": "",
+                    "id": target_id,
+                    "title": tab.get("title").cloned().unwrap_or(Value::Null),
+                    "type": "page",
+                    "url": tab.get("url").cloned().unwrap_or(Value::Null),
+                    "webSocketDebuggerUrl": format!("ws://127.0.0.1:9333/devtools/page/{target_id}"),
+                })
+            })
+            .collect());
+    }
+
+    let tabs: Vec<Value> = reqwest::get(format!("{}/json/list", backend.base_url()))
         .await?
         .json()
         .await?;
@@ -542,49 +819,71 @@ async fn chromium_tabs() -> Result<Vec<Value>> {
         .collect())
 }
 
-async fn chromium_target(input: &BrowserInput) -> Result<Value> {
-    let tabs = chromium_tabs().await?;
+async fn cdp_target(backend: CdpBackend, input: &BrowserInput) -> Result<Value> {
+    if matches!(backend, CdpBackend::Obscura) {
+        if let Some(mutex) = OBSCURA_CDP_SESSION.get() {
+            let guard = mutex.lock().await;
+            if let Some(session) = guard.as_ref() {
+                return Ok(obscura_target_value(&session.target_id, &session.url));
+            }
+        }
+    }
+    let tabs = cdp_tabs(backend).await?;
     if tabs.is_empty() {
-        anyhow::bail!("No Chromium page targets are available via CDP");
+        if matches!(backend, CdpBackend::Obscura) {
+            return cdp_new_tab(backend, Some("about:blank")).await;
+        }
+        anyhow::bail!("No {} page targets are available", backend.display_name());
     }
     let idx = input.tab_id.unwrap_or(0).max(0) as usize;
     tabs.get(idx)
         .cloned()
         .or_else(|| tabs.first().cloned())
-        .ok_or_else(|| anyhow::anyhow!("No Chromium page targets are available via CDP"))
+        .ok_or_else(|| anyhow::anyhow!("No {} page targets are available", backend.display_name()))
 }
 
-async fn chromium_new_tab(url: Option<&str>) -> Result<Value> {
+async fn cdp_new_tab(backend: CdpBackend, url: Option<&str>) -> Result<Value> {
+    if matches!(backend, CdpBackend::Obscura) {
+        let target_url = url.unwrap_or("about:blank");
+        return obscura_navigate(target_url).await;
+    }
+
     let target_url = url.unwrap_or("about:blank");
     let encoded = urlencoding::encode(target_url);
     let client = reqwest::Client::new();
     let resp = client
-        .put(format!("{}/json/new?{}", chromium_cdp_base_url(), encoded))
+        .put(format!("{}/json/new?{}", backend.base_url(), encoded))
         .send()
         .await?;
     if !resp.status().is_success() {
-        anyhow::bail!("Failed to create Chromium tab: HTTP {}", resp.status());
+        anyhow::bail!(
+            "Failed to create {} tab: HTTP {}",
+            backend.browser(),
+            resp.status()
+        );
     }
     Ok(resp.json::<Value>().await?)
 }
 
-async fn chromium_activate(id: &str) -> Result<()> {
-    let _ = reqwest::get(format!("{}/json/activate/{}", chromium_cdp_base_url(), id)).await?;
+async fn cdp_activate(backend: CdpBackend, id: &str) -> Result<()> {
+    let _ = reqwest::get(format!("{}/json/activate/{}", backend.base_url(), id)).await?;
     Ok(())
 }
 
 async fn cdp_call_on(
     ws: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     next_id: &mut i64,
+    session_id: Option<&str>,
     method: &str,
     params: Value,
 ) -> Result<Value> {
     let id = *next_id;
     *next_id += 1;
-    ws.send(Message::Text(
-        json!({"id": id, "method": method, "params": params}).to_string(),
-    ))
-    .await?;
+    let mut message = json!({"id": id, "method": method, "params": params});
+    if let Some(session_id) = session_id {
+        message["sessionId"] = json!(session_id);
+    }
+    ws.send(Message::Text(message.to_string())).await?;
     while let Some(msg) = ws.next().await {
         let msg = msg?;
         if !msg.is_text() {
@@ -601,19 +900,183 @@ async fn cdp_call_on(
     anyhow::bail!("CDP {} returned no response", method)
 }
 
-async fn cdp_call(ws_url: &str, method: &str, params: Value) -> Result<Value> {
-    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await?;
-    let mut next_id = 1_i64;
-    cdp_call_on(&mut ws, &mut next_id, method, params).await
-}
-
-async fn cdp_eval(target: &Value, expression: String, await_promise: bool) -> Result<Value> {
-    let ws = target
+async fn cdp_browser_ws_url(backend: CdpBackend) -> Result<String> {
+    let version: Value = reqwest::get(format!("{}/json/version", backend.base_url()))
+        .await?
+        .json()
+        .await?;
+    version
         .get("webSocketDebuggerUrl")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Chromium target has no webSocketDebuggerUrl"))?;
-    let result = cdp_call(
+        .map(str::to_string)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} has no browser webSocketDebuggerUrl",
+                backend.display_name()
+            )
+        })
+}
+
+async fn obscura_new_session(url: &str) -> Result<ObscuraCdpSession> {
+    let browser_ws = cdp_browser_ws_url(CdpBackend::Obscura).await?;
+    let (mut ws, _) = tokio_tungstenite::connect_async(browser_ws).await?;
+    let mut next_id = 1_i64;
+    let created = cdp_call_on(
+        &mut ws,
+        &mut next_id,
+        None,
+        "Target.createTarget",
+        json!({"url": url}),
+    )
+    .await?;
+    let target_id = created
+        .get("targetId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Target.createTarget returned no targetId"))?
+        .to_string();
+    let attached = cdp_call_on(
+        &mut ws,
+        &mut next_id,
+        None,
+        "Target.attachToTarget",
+        json!({"targetId": target_id, "flatten": true}),
+    )
+    .await?;
+    let session_id = attached
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Target.attachToTarget returned no sessionId"))?
+        .to_string();
+    Ok(ObscuraCdpSession {
         ws,
+        next_id,
+        session_id,
+        target_id,
+        url: url.to_string(),
+    })
+}
+
+async fn obscura_session_call(method: &str, params: Value) -> Result<Value> {
+    let mutex = OBSCURA_CDP_SESSION.get_or_init(|| tokio::sync::Mutex::new(None));
+    let mut guard = mutex.lock().await;
+    if guard.is_none() {
+        *guard = Some(obscura_new_session("about:blank").await?);
+    }
+    let session = guard.as_mut().expect("session was initialized");
+    match cdp_call_on(
+        &mut session.ws,
+        &mut session.next_id,
+        Some(&session.session_id),
+        method,
+        params.clone(),
+    )
+    .await
+    {
+        Ok(value) => Ok(value),
+        Err(first_error) => {
+            *guard = Some(obscura_new_session("about:blank").await?);
+            let session = guard.as_mut().expect("session was reinitialized");
+            cdp_call_on(
+                &mut session.ws,
+                &mut session.next_id,
+                Some(&session.session_id),
+                method,
+                params,
+            )
+            .await
+            .with_context(|| {
+                format!("retry after recreating Obscura session; first error: {first_error}")
+            })
+        }
+    }
+}
+
+async fn obscura_navigate(url: &str) -> Result<Value> {
+    let mutex = OBSCURA_CDP_SESSION.get_or_init(|| tokio::sync::Mutex::new(None));
+    let mut guard = mutex.lock().await;
+    if guard.is_none() {
+        *guard = Some(obscura_new_session(url).await?);
+    } else if let Some(session) = guard.as_mut() {
+        cdp_call_on(
+            &mut session.ws,
+            &mut session.next_id,
+            Some(&session.session_id),
+            "Page.navigate",
+            json!({"url": url}),
+        )
+        .await?;
+        session.url = url.to_string();
+    }
+    let target_id = guard
+        .as_ref()
+        .map(|session| session.target_id.clone())
+        .unwrap_or_else(|| "page-1".to_string());
+    Ok(obscura_target_value(&target_id, url))
+}
+
+async fn cdp_connect_to_target(
+    backend: CdpBackend,
+    target: &Value,
+) -> Result<(
+    WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    i64,
+    Option<String>,
+)> {
+    let ws_url = match backend {
+        CdpBackend::Obscura => cdp_browser_ws_url(backend).await?,
+        CdpBackend::Chromium => cdp_ws_url(target)?.to_string(),
+    };
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await?;
+    let mut next_id = 1_i64;
+    let session_id = if matches!(backend, CdpBackend::Obscura) {
+        let target_id = target
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("{} target has no id", backend.display_name()))?;
+        let attached = cdp_call_on(
+            &mut ws,
+            &mut next_id,
+            None,
+            "Target.attachToTarget",
+            json!({"targetId": target_id, "flatten": true}),
+        )
+        .await?;
+        Some(
+            attached
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Target.attachToTarget returned no sessionId"))?
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    Ok((ws, next_id, session_id))
+}
+
+async fn cdp_call_target(
+    backend: CdpBackend,
+    target: &Value,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    if matches!(backend, CdpBackend::Obscura) {
+        return obscura_session_call(method, params).await;
+    }
+
+    let (mut ws, mut next_id, session_id) = cdp_connect_to_target(backend, target).await?;
+    cdp_call_on(&mut ws, &mut next_id, session_id.as_deref(), method, params).await
+}
+
+async fn cdp_eval(
+    backend: CdpBackend,
+    target: &Value,
+    expression: String,
+    await_promise: bool,
+) -> Result<Value> {
+    let result = cdp_call_target(
+        backend,
+        target,
         "Runtime.evaluate",
         json!({
             "expression": expression,
@@ -636,42 +1099,43 @@ fn js_string(value: &str) -> Result<String> {
     Ok(serde_json::to_string(value)?)
 }
 
-fn chromium_ws_url(target: &Value) -> Result<&str> {
+fn cdp_ws_url(target: &Value) -> Result<&str> {
     target
         .get("webSocketDebuggerUrl")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Chromium target has no webSocketDebuggerUrl"))
+        .ok_or_else(|| anyhow::anyhow!("CDP target has no webSocketDebuggerUrl"))
 }
 
-async fn execute_chromium_action(
+async fn execute_cdp_action(
+    backend: CdpBackend,
     action: &str,
     input: &BrowserInput,
     _ctx: &ToolContext,
 ) -> Result<ToolOutput> {
     match action {
         "list_tabs" => {
-            let tabs = chromium_tabs().await?;
+            let tabs = cdp_tabs(backend).await?;
             return Ok(ToolOutput::new(serde_json::to_string_pretty(&tabs)?)
                 .with_title("browser list_tabs")
                 .with_metadata(json!({"tabs": tabs})));
         }
         "new_tab" => {
-            let tab = chromium_new_tab(input.url.as_deref()).await?;
+            let tab = cdp_new_tab(backend, input.url.as_deref()).await?;
             return Ok(ToolOutput::new(serde_json::to_string_pretty(&tab)?)
                 .with_title("browser new_tab")
                 .with_metadata(tab));
         }
         "select_tab" => {
-            let target = chromium_target(input).await?;
+            let target = cdp_target(backend, input).await?;
             if let Some(id) = target.get("id").and_then(|v| v.as_str()) {
-                chromium_activate(id).await?;
+                cdp_activate(backend, id).await?;
             }
             return Ok(ToolOutput::new(serde_json::to_string_pretty(&target)?)
                 .with_title("browser select_tab")
                 .with_metadata(target));
         }
         "get_active_tab" => {
-            let target = chromium_target(input).await?;
+            let target = cdp_target(backend, input).await?;
             return Ok(ToolOutput::new(serde_json::to_string_pretty(&target)?)
                 .with_title("browser get_active_tab")
                 .with_metadata(target));
@@ -679,31 +1143,30 @@ async fn execute_chromium_action(
         _ => {}
     }
 
-    let target = chromium_target(input).await?;
+    let target = cdp_target(backend, input).await?;
     let title = format!("browser {}", action);
     let result = match action {
         "open" => {
             if input.new_tab.unwrap_or(false) {
-                chromium_new_tab(input.url.as_deref()).await?
+                cdp_new_tab(backend, input.url.as_deref()).await?
             } else {
                 let url = input
                     .url
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("url is required for open"))?;
-                let ws = chromium_ws_url(&target)?;
-                cdp_call(ws, "Page.navigate", json!({"url": url})).await?;
+                cdp_call_target(backend, &target, "Page.navigate", json!({"url": url})).await?;
                 if input.wait.unwrap_or(true) {
                     let timeout = input.timeout_ms.unwrap_or(30_000);
                     let expr = format!(
                         r#"new Promise((resolve, reject) => {{ const deadline = Date.now() + {}; const tick = () => {{ if (document.readyState === 'complete') resolve(true); else if (Date.now() > deadline) reject(new Error('navigation timeout')); else setTimeout(tick, 100); }}; tick(); }})"#,
                         timeout
                     );
-                    cdp_eval(&target, expr, true).await?;
+                    cdp_eval(backend, &target, expr, true).await?;
                 }
                 json!({"ok": true, "url": url})
             }
         }
-        "snapshot" | "get_content" => {
+        "snapshot" | "content" | "get_content" => {
             let fmt = input.format.as_deref().unwrap_or(if action == "snapshot" {
                 "annotated"
             } else {
@@ -716,12 +1179,12 @@ async fn execute_chromium_action(
                     "document.title + '\\n' + location.href + '\\n\\n' + (document.body ? document.body.innerText : '')"
                 }
             };
-            let eval = cdp_eval(&target, script.to_string(), false).await?;
+            let eval = cdp_eval(backend, &target, script.to_string(), false).await?;
             json!({"content": eval.get("result").cloned().unwrap_or(Value::Null)})
         }
         "interactables" => {
             let script = r#"Array.from(document.querySelectorAll('a,button,input,textarea,select,[role=button],[tabindex]')).slice(0,100).map((el, i) => ({index:i, tag:el.tagName, type:el.getAttribute('role') || el.type || 'element', text:(el.innerText || el.value || el.ariaLabel || el.name || el.id || '').trim().slice(0,120), selector: el.id ? '#' + CSS.escape(el.id) : el.tagName.toLowerCase() + ':nth-of-type(' + (Array.from(el.parentElement ? el.parentElement.children : []).filter(e => e.tagName === el.tagName).indexOf(el) + 1) + ')'}))"#;
-            let eval = cdp_eval(&target, script.to_string(), false).await?;
+            let eval = cdp_eval(backend, &target, script.to_string(), false).await?;
             json!({"elements": eval.get("result").cloned().unwrap_or(Value::Null)})
         }
         "click" => {
@@ -742,7 +1205,7 @@ async fn execute_chromium_action(
                     input.y.unwrap_or(0.0)
                 )
             };
-            cdp_eval(&target, expr, false).await?
+            cdp_eval(backend, &target, expr, false).await?
         }
         "type" => {
             let text = input
@@ -757,7 +1220,7 @@ async fn execute_chromium_action(
                 js_string(text)?,
                 input.submit.unwrap_or(false)
             );
-            cdp_eval(&target, expr, false).await?
+            cdp_eval(backend, &target, expr, false).await?
         }
         "fill_form" => {
             let fields = serde_json::to_string(
@@ -770,7 +1233,7 @@ async fn execute_chromium_action(
                 "(() => {{ const fields = {}; for (const f of fields) {{ const el = document.querySelector(f.selector); if (!el) throw new Error('selector not found: ' + f.selector); if (typeof f.checked === 'boolean') el.checked = f.checked; if (f.value !== undefined) el.value = f.value; el.dispatchEvent(new Event('input', {{bubbles:true}})); el.dispatchEvent(new Event('change', {{bubbles:true}})); }} return true; }})()",
                 fields
             );
-            cdp_eval(&target, expr, false).await?
+            cdp_eval(backend, &target, expr, false).await?
         }
         "select" => {
             let selector = input
@@ -786,7 +1249,7 @@ async fn execute_chromium_action(
                 js_string(selector)?,
                 js_string(value)?
             );
-            cdp_eval(&target, expr, false).await?
+            cdp_eval(backend, &target, expr, false).await?
         }
         "wait" => {
             let timeout = input.timeout_ms.unwrap_or(10_000);
@@ -802,14 +1265,14 @@ async fn execute_chromium_action(
                 js_string(selector)?,
                 js_string(text)?
             );
-            cdp_eval(&target, expr, true).await?
+            cdp_eval(backend, &target, expr, true).await?
         }
         "eval" => {
             let script = input
                 .script
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("script is required for eval"))?;
-            cdp_eval(&target, script.to_string(), true).await?
+            cdp_eval(backend, &target, script.to_string(), true).await?
         }
         "scroll" => {
             let x = input.x.unwrap_or(0.0);
@@ -823,7 +1286,7 @@ async fn execute_chromium_action(
             } else {
                 format!("window.scrollBy({}, {}); true", x, y)
             };
-            cdp_eval(&target, expr, false).await?
+            cdp_eval(backend, &target, expr, false).await?
         }
         "press" => {
             let key = input
@@ -855,20 +1318,23 @@ async fn execute_chromium_action(
   return {{ pressed: true, key, tag: target.tagName || null }};
 }})()"#
             );
-            cdp_eval(&target, script, false).await?
+            cdp_eval(backend, &target, script, false).await?
         }
         "screenshot" => {
-            let ws = chromium_ws_url(&target)?;
-            let capture = cdp_call(
-                ws,
+            let capture = cdp_call_target(
+                backend,
+                &target,
                 "Page.captureScreenshot",
                 json!({"format":"png", "fromSurface": true}),
             )
             .await?;
             let data = capture.get("data").and_then(|v| v.as_str()).unwrap_or("");
-            let mut out = ToolOutput::new("Captured browser screenshot from controlled Chromium.")
-                .with_title(title)
-                .with_metadata(capture.clone());
+            let mut out = ToolOutput::new(format!(
+                "Captured browser screenshot from {}.",
+                backend.display_name()
+            ))
+            .with_title(title)
+            .with_metadata(capture.clone());
             if !data.is_empty() {
                 out = out.with_labeled_image(
                     "image/png",
@@ -878,10 +1344,7 @@ async fn execute_chromium_action(
             }
             return Ok(out);
         }
-        "list_frames" => {
-            let ws = chromium_ws_url(&target)?;
-            cdp_call(ws, "Page.getFrameTree", json!({})).await?
-        }
+        "list_frames" => cdp_call_target(backend, &target, "Page.getFrameTree", json!({})).await?,
         "upload" => {
             let selector = input
                 .selector
@@ -891,12 +1354,81 @@ async fn execute_chromium_action(
                 .path
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("path is required for upload"))?;
-            let ws = chromium_ws_url(&target)?;
-            let (mut ws_conn, _) = tokio_tungstenite::connect_async(ws).await?;
-            let mut next_id = 1_i64;
-            cdp_call_on(&mut ws_conn, &mut next_id, "DOM.enable", json!({})).await?;
-            let document =
-                cdp_call_on(&mut ws_conn, &mut next_id, "DOM.getDocument", json!({})).await?;
+            if matches!(backend, CdpBackend::Obscura) {
+                let mutex = OBSCURA_CDP_SESSION.get_or_init(|| tokio::sync::Mutex::new(None));
+                let mut guard = mutex.lock().await;
+                if guard.is_none() {
+                    *guard = Some(obscura_new_session("about:blank").await?);
+                }
+                let session = guard.as_mut().expect("session was initialized");
+                cdp_call_on(
+                    &mut session.ws,
+                    &mut session.next_id,
+                    Some(&session.session_id),
+                    "DOM.enable",
+                    json!({}),
+                )
+                .await?;
+                let document = cdp_call_on(
+                    &mut session.ws,
+                    &mut session.next_id,
+                    Some(&session.session_id),
+                    "DOM.getDocument",
+                    json!({}),
+                )
+                .await?;
+                let root_node_id = document
+                    .get("root")
+                    .and_then(|root| root.get("nodeId"))
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("CDP DOM.getDocument did not return a root node")
+                    })?;
+                let queried = cdp_call_on(
+                    &mut session.ws,
+                    &mut session.next_id,
+                    Some(&session.session_id),
+                    "DOM.querySelector",
+                    json!({"nodeId": root_node_id, "selector": selector}),
+                )
+                .await?;
+                let node_id = queried
+                    .get("nodeId")
+                    .and_then(|v| v.as_i64())
+                    .filter(|id| *id != 0)
+                    .ok_or_else(|| anyhow::anyhow!("upload selector not found: {}", selector))?;
+                cdp_call_on(
+                    &mut session.ws,
+                    &mut session.next_id,
+                    Some(&session.session_id),
+                    "DOM.setFileInputFiles",
+                    json!({"nodeId": node_id, "files": [path]}),
+                )
+                .await?;
+                return Ok(render_browser_output(
+                    action,
+                    title,
+                    json!({"ok": true, "selector": selector, "path": path}),
+                ));
+            }
+            let (mut ws_conn, mut next_id, session_id) =
+                cdp_connect_to_target(backend, &target).await?;
+            cdp_call_on(
+                &mut ws_conn,
+                &mut next_id,
+                session_id.as_deref(),
+                "DOM.enable",
+                json!({}),
+            )
+            .await?;
+            let document = cdp_call_on(
+                &mut ws_conn,
+                &mut next_id,
+                session_id.as_deref(),
+                "DOM.getDocument",
+                json!({}),
+            )
+            .await?;
             let root_node_id = document
                 .get("root")
                 .and_then(|root| root.get("nodeId"))
@@ -905,6 +1437,7 @@ async fn execute_chromium_action(
             let queried = cdp_call_on(
                 &mut ws_conn,
                 &mut next_id,
+                session_id.as_deref(),
                 "DOM.querySelector",
                 json!({"nodeId": root_node_id, "selector": selector}),
             )
@@ -917,6 +1450,7 @@ async fn execute_chromium_action(
             cdp_call_on(
                 &mut ws_conn,
                 &mut next_id,
+                session_id.as_deref(),
                 "DOM.setFileInputFiles",
                 json!({"nodeId": node_id, "files": [path]}),
             )
@@ -924,18 +1458,24 @@ async fn execute_chromium_action(
             json!({"ok": true, "selector": selector, "path": path})
         }
         "provider_command" => {
-            let method = input.provider_action.as_deref().ok_or_else(|| {
-                anyhow::anyhow!("provider_action is required and is used as the CDP method")
+            let method = input.provider_method().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "provider_action or method is required and is used as the CDP method"
+                )
             })?;
-            let ws = chromium_ws_url(&target)?;
-            cdp_call(
-                ws,
+            cdp_call_target(
+                backend,
+                &target,
                 method,
                 input.params.clone().unwrap_or_else(|| json!({})),
             )
             .await?
         }
-        other => anyhow::bail!("Unsupported browser action for Chromium CDP: {}", other),
+        other => anyhow::bail!(
+            "Unsupported browser action for {}: {}",
+            backend.display_name(),
+            other
+        ),
     };
 
     Ok(render_browser_output(action, title, result))
@@ -1076,6 +1616,7 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
         "list_frames" => "listFrames",
         "open" => "navigate",
         "snapshot" => "getContent",
+        "content" => "getContent",
         "get_content" => "getContent",
         "interactables" => "getInteractables",
         "click" => "click",
@@ -1088,8 +1629,8 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
         "scroll" => "scroll",
         "upload" => "uploadFile",
         "press" => "evaluate",
-        "provider_command" => input.provider_action.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("provider_action is required when action='provider_command'")
+        "provider_command" => input.provider_method().ok_or_else(|| {
+            anyhow::anyhow!("provider_action or method is required when action='provider_command'")
         })?,
         other => anyhow::bail!("Unsupported browser action: {}", other),
     }

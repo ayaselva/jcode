@@ -19,6 +19,7 @@ fn snapshot_maps_to_annotated_get_content() {
         action: "snapshot".into(),
         browser: None,
         provider_action: None,
+        method: None,
         params: None,
         url: None,
         tab_id: Some(7),
@@ -61,6 +62,7 @@ fn eval_maps_script_and_page_world() {
         action: "eval".into(),
         browser: None,
         provider_action: None,
+        method: None,
         params: None,
         url: None,
         tab_id: None,
@@ -101,6 +103,7 @@ fn interactables_maps_to_bridge_action() {
         action: "interactables".into(),
         browser: None,
         provider_action: None,
+        method: None,
         params: None,
         url: None,
         tab_id: Some(9),
@@ -144,6 +147,12 @@ fn schema_exposes_advanced_browser_fields() {
 
     assert!(props.contains_key("action"));
     assert!(props.contains_key("browser"));
+    assert!(
+        props["browser"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("obscura"))
+    );
     assert!(props.contains_key("url"));
     assert!(props.contains_key("tab_id"));
     assert!(props.contains_key("frame_id"));
@@ -173,8 +182,13 @@ fn schema_exposes_advanced_browser_fields() {
 }
 
 #[test]
-fn resolve_provider_accepts_auto_chromium_chrome_and_firefox() {
-    assert!(resolve_provider(Some("auto")).is_ok());
+fn resolve_provider_accepts_auto_obscura_chromium_chrome_and_firefox() {
+    assert_eq!(resolve_provider(None).unwrap().id(), "obscura_cdp");
+    assert_eq!(resolve_provider(Some("auto")).unwrap().id(), "obscura_cdp");
+    assert_eq!(
+        resolve_provider(Some("obscura")).unwrap().id(),
+        "obscura_cdp"
+    );
     assert!(resolve_provider(Some("chromium")).is_ok());
     assert!(resolve_provider(Some("chrome")).is_ok());
     assert!(resolve_provider(Some("firefox")).is_ok());

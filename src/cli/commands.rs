@@ -1925,17 +1925,22 @@ pub(crate) async fn run_browser(args: &crate::cli::args::BrowserCliArgs) -> Resu
 }
 
 fn browser_cli_input(args: &crate::cli::args::BrowserCliArgs) -> Result<Value> {
+    let action = normalize_browser_cli_action(&args.action);
     let mut map = if let Some(raw) = &args.params {
         let parsed: Value = serde_json::from_str(raw).context("--params must be a JSON object")?;
-        parsed
+        let parsed_map = parsed
             .as_object()
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("--params must be a JSON object"))?
+            .ok_or_else(|| anyhow::anyhow!("--params must be a JSON object"))?;
+        if action == "batch" {
+            Map::from_iter([("params".to_string(), Value::Object(parsed_map))])
+        } else {
+            parsed_map
+        }
     } else {
         Map::new()
     };
 
-    let action = normalize_browser_cli_action(&args.action);
     map.insert("action".into(), json!(action));
     insert_opt(&mut map, "browser", &args.browser);
     insert_opt(&mut map, "url", &args.url);

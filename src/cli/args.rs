@@ -366,7 +366,7 @@ pub(crate) enum Command {
     /// Install a launcher so jcode appears in your app launcher
     SetupLauncher,
 
-    /// Browser automation via the default controlled Chromium/CDP backend
+    /// Browser automation via the default Obscura/CDP backend
     Browser(BrowserCliArgs),
 
     /// Replay a saved session in the TUI
@@ -529,11 +529,11 @@ pub(crate) enum Command {
 
 #[derive(ClapArgs, Debug, Clone)]
 pub(crate) struct BrowserCliArgs {
-    /// Action: status, setup, list-tabs, new-tab, select-tab, active-tab, open, snapshot, content, interactables, click, type, fill-form, select, wait, screenshot, eval, scroll, press
+    /// Action: status, setup, tabs, list-tabs, new-tab, select-tab, active-tab, open, snapshot, content, interactables, click, type, fill-form, select, wait, screenshot, eval, scroll, press, upload, list-frames, provider-command, batch
     #[arg(default_value = "status")]
     pub(crate) action: String,
 
-    /// Browser backend: auto/chromium/chrome/firefox
+    /// Browser backend: auto/obscura/chromium/chrome/firefox
     #[arg(long)]
     pub(crate) browser: Option<String>,
 
