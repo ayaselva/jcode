@@ -291,6 +291,11 @@ impl Config {
                 self.display.tool_call_details = parsed;
             }
         }
+        if let Ok(v) = std::env::var("JCODE_HEADER_DETAILS") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.display.header_details = parsed;
+            }
+        }
         if let Ok(v) = std::env::var("JCODE_LATEX_RENDERING")
             && let Some(mode) = LatexRenderingMode::parse(&v)
         {

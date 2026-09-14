@@ -198,6 +198,12 @@ prompt_entry_animation = true
 # technical detail.
 # tool_call_details = false
 
+# Show the detailed startup header block above the first message (server and
+# client versions, the /login provider inventory, loaded skills, and the
+# working directory). Set false for a single-line header that shows only the
+# active model and its reasoning effort (default: true).
+# header_details = true
+
 # Occasionally surface a "learn this keybinding" nudge (in a distinct color)
 # when you keep doing something the slow way (e.g. /resume) instead of using
 # its configured shortcut. Set false to disable all such hints (default: true).

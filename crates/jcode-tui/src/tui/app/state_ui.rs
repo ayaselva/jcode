@@ -765,6 +765,13 @@ impl App {
         self.remote_session_id = session_id.map(str::to_string);
     }
 
+    /// Set the server-reported reasoning effort for header tests, so the compact
+    /// header line can be exercised without a live remote session.
+    #[cfg(test)]
+    pub(crate) fn set_remote_reasoning_effort_for_tests(&mut self, effort: Option<&str>) {
+        self.remote_reasoning_effort = effort.map(str::to_string);
+    }
+
     /// Set the displayed remote connection type (e.g. "https/sse") for header
     /// tests. `None` clears it (unknown connection).
     #[cfg(test)]

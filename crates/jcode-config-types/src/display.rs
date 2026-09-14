@@ -85,6 +85,12 @@ pub struct DisplayConfig {
     /// always fall back to the technical detail.
     #[serde(default)]
     pub tool_call_details: bool,
+    /// Show the detailed startup header block above the first message: server
+    /// and client versions, the `/login` provider inventory, loaded skills, and
+    /// the working directory. Set false for a single-line header that shows
+    /// only the active model and its reasoning effort (default: true).
+    #[serde(default = "default_true")]
+    pub header_details: bool,
     /// Native terminal scrollbar configuration for scrollable panes
     pub native_scrollbars: NativeScrollbarConfig,
     /// Surface occasional "learn this keybinding" nudges when the user keeps
@@ -151,6 +157,7 @@ impl Default for DisplayConfig {
             copy_badge_alt_label: String::new(),
             show_agentgrep_output: false,
             tool_call_details: false,
+            header_details: true,
             native_scrollbars: NativeScrollbarConfig::default(),
             keybinding_hints: true,
             theme: String::new(),

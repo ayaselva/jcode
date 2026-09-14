@@ -44,6 +44,58 @@ pub(crate) fn capitalize(s: &str) -> String {
     }
 }
 
+/// Whether the full startup header block is rendered above the first message.
+///
+/// When disabled (`display.header_details = false`) the header collapses to a
+/// single line with the active model and its reasoning effort. Everything the
+/// detailed block carried - server/client versions, the `/login` provider
+/// inventory, loaded skills, the working directory - stays available through
+/// `/info`, `/model`, and `/config`.
+#[cfg(not(test))]
+fn header_details() -> bool {
+    crate::config::config().display.header_details
+}
+
+#[cfg(test)]
+fn header_details() -> bool {
+    tests_header_details_override::get()
+}
+
+#[cfg(test)]
+pub(crate) mod tests_header_details_override {
+    use std::cell::Cell;
+
+    thread_local! {
+        static HEADER_DETAILS: Cell<bool> = const { Cell::new(true) };
+    }
+
+    pub(crate) fn get() -> bool {
+        HEADER_DETAILS.with(Cell::get)
+    }
+
+    pub(crate) fn set(value: bool) {
+        HEADER_DETAILS.with(|cell| cell.set(value));
+    }
+
+    /// Scoped switch to the compact header that restores the default on drop,
+    /// so a failing assertion cannot leak compact mode into other tests on the
+    /// same thread.
+    pub(crate) struct CompactHeaderGuard;
+
+    impl CompactHeaderGuard {
+        pub(crate) fn enable() -> Self {
+            set(false);
+            Self
+        }
+    }
+
+    impl Drop for CompactHeaderGuard {
+        fn drop(&mut self) {
+            set(true);
+        }
+    }
+}
+
 /// Compact form of a full build version string: `v0.25.19-dev (abc1234, dirty)`
 /// becomes `v0.25.19-dev`. Used for the per-line server/client version labels.
 fn compact_version_label(version: &str) -> String {
@@ -609,6 +661,66 @@ pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Lin
     build_persistent_header_with_auth(app, width, &auth, active)
 }
 
+/// Reasoning-effort label for the compact header. Uses the same vocabulary the
+/// `/model` picker and `--effort` flags accept (`high`, `xhigh`, `max`, ...) so
+/// the line reads as an actionable setting rather than an internal code.
+/// `none` becomes `off` because "(none)" reads like a missing value.
+fn compact_effort_label(effort: &str) -> Option<&str> {
+    let effort = effort.trim();
+    if effort.is_empty() {
+        return None;
+    }
+    Some(match effort {
+        "none" => "off",
+        other => other,
+    })
+}
+
+/// The `display.header_details = false` header: one line, `model (effort)`.
+/// Update-available badges stay because they are actionable and only appear
+/// when an update actually exists; everything else is diagnostics.
+fn compact_persistent_header(
+    model: &str,
+    effort: Option<String>,
+    server_update: bool,
+    client_update: bool,
+) -> Vec<Line<'static>> {
+    let label = model.trim();
+    let model_style = if label.is_empty() {
+        // No model known yet (early startup): still render a header line
+        // instead of an empty header.
+        Style::default().fg(header_name_color()).bold()
+    } else {
+        Style::default().fg(rgb(255, 150, 200)).bold()
+    };
+    let model_text = if label.is_empty() {
+        "jcode".to_string()
+    } else {
+        label.to_string()
+    };
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(model_text, model_style)];
+    if let Some(effort) = effort.as_deref().and_then(compact_effort_label) {
+        spans.push(Span::styled(
+            format!(" ({effort})"),
+            Style::default().fg(rgb(255, 200, 100)),
+        ));
+    }
+    let mut badges: Vec<&str> = Vec::new();
+    if server_update {
+        badges.push("srv↑");
+    }
+    if client_update {
+        badges.push("cli↑");
+    }
+    if !badges.is_empty() {
+        spans.push(Span::styled(
+            format!(" · {}", badges.join(" ")),
+            Style::default().fg(dim_color()),
+        ));
+    }
+    vec![Line::from(spans).alignment(Alignment::Left)]
+}
+
 fn build_persistent_header_with_auth(
     app: &dyn TuiState,
     width: u16,
@@ -647,6 +759,18 @@ fn build_persistent_header_with_auth(
     }
     if let Some(badge) = crate::perf::profile().tier.badge() {
         status_items.push(badge);
+    }
+
+    // Compact mode: the model and its reasoning effort on one line, which is
+    // what most users actually need at a glance. The rest of the block is
+    // diagnostic detail reachable through `/info`, `/model`, and `/config`.
+    if !header_details() {
+        return compact_persistent_header(
+            &nice_model,
+            app.reasoning_effort(),
+            server_update,
+            client_update,
+        );
     }
 
     // Labeled versions for the `server:` / `client:` lines. Lots of users run
@@ -840,6 +964,12 @@ fn build_header_lines_with_auth(
     auth: &AuthStatus,
     active: ActiveCredentialOverrides,
 ) -> Vec<Line<'static>> {
+    // Compact mode renders only the persistent model line; keep a single blank
+    // separator so the transcript spacing above the first message is unchanged.
+    if !header_details() {
+        return vec![Line::from("")];
+    }
+
     let mut lines: Vec<Line> = Vec::new();
     let align = ratatui::layout::Alignment::Left;
     let w = width as usize;
@@ -1109,6 +1239,98 @@ mod tests {
         let rendered = choose_header_candidate(8, version_display_candidates());
         // Version-agnostic: at width 8 only the bare minor semver fits.
         assert_eq!(rendered, semver_minor());
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn compact_header_line_shows_model_and_effort_only() {
+        let line = |model: &str, effort: Option<&str>, srv: bool, cli: bool| {
+            let lines = compact_persistent_header(model, effort.map(str::to_string), srv, cli);
+            assert_eq!(lines.len(), 1, "compact header is always one line");
+            line_text(&lines[0])
+        };
+
+        assert_eq!(
+            line("deepseek-v4.1-flash", Some("high"), false, false),
+            "deepseek-v4.1-flash (high)"
+        );
+        assert_eq!(
+            line("gpt-5.5", Some("xhigh"), false, false),
+            "gpt-5.5 (xhigh)"
+        );
+        // `none` reads as the actionable "off" instead of a missing value.
+        assert_eq!(line("gpt-5.5", Some("none"), false, false), "gpt-5.5 (off)");
+        // Routes without a reasoning effort show the model alone.
+        assert_eq!(line("gpt-5.5", None, false, false), "gpt-5.5");
+        // Actionable update badges survive; everything else is diagnostics.
+        assert_eq!(line("gpt-5.5", None, true, true), "gpt-5.5 · srv↑ cli↑");
+        // A blank model still renders a header line rather than an empty header.
+        assert_eq!(line("   ", None, false, false), "jcode");
+    }
+
+    #[test]
+    fn compact_header_drops_the_detail_block() {
+        let _guard = tests_header_details_override::CompactHeaderGuard::enable();
+        let app = create_test_app();
+
+        let (persistent, secondary) = build_header_sections(&app, 120);
+
+        assert_eq!(
+            persistent.len(),
+            1,
+            "compact header should be a single line: {persistent:?}"
+        );
+        let rendered = line_text(&persistent[0]);
+        let expected_model = header_model_display_name(&app.provider_model(), &app.provider_name());
+        assert!(
+            rendered.starts_with(expected_model.trim()),
+            "compact header should lead with the model: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("self-dev") && !rendered.contains("server:"),
+            "compact header should not carry build/server badges: {rendered:?}"
+        );
+
+        let detail = secondary
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.trim().is_empty(),
+            "compact header should not render the login/skills/working-dir block: {detail:?}"
+        );
+    }
+
+    #[test]
+    fn compact_header_renders_the_active_reasoning_effort() {
+        let _guard = tests_header_details_override::CompactHeaderGuard::enable();
+        let mut app = create_test_app();
+        app.set_remote_server_identity_for_tests(
+            Some("forge"),
+            Some("*"),
+            Some("v0.64.2"),
+            Some("session_fox_1705012345678"),
+        );
+        app.set_remote_reasoning_effort_for_tests(Some("high"));
+
+        let lines = rendered_header_lines(&app, 120);
+
+        assert_eq!(
+            lines.len(),
+            1,
+            "compact header should be one line: {lines:?}"
+        );
+        assert!(
+            lines[0].ends_with("(high)"),
+            "compact header should end with the reasoning effort: {lines:?}"
+        );
     }
 
     fn rendered_header_lines(app: &crate::tui::app::App, width: u16) -> Vec<String> {

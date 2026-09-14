@@ -1039,6 +1039,13 @@ fn header_prep_signature(app: &dyn TuiState, width: u16) -> u64 {
     width.hash(&mut hasher);
     app.provider_model().hash(&mut hasher);
     app.provider_name().hash(&mut hasher);
+    // The compact header renders the reasoning effort next to the model, and
+    // alt+left/right changes it without touching any other header input.
+    app.reasoning_effort().hash(&mut hasher);
+    crate::config::config()
+        .display
+        .header_details
+        .hash(&mut hasher);
     app.session_display_name().hash(&mut hasher);
     app.server_display_name().hash(&mut hasher);
     app.server_display_version().hash(&mut hasher);

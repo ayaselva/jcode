@@ -670,6 +670,17 @@ impl crate::tui::TuiState for App {
         }
     }
 
+    fn reasoning_effort(&self) -> Option<String> {
+        // Mirror `info_widget_data`: remote/replay sessions report the
+        // server-side effort, local sessions read it off the provider, so the
+        // compact header and the model widget can never disagree.
+        if self.is_remote || self.is_replay_runtime() {
+            self.remote_reasoning_effort.clone()
+        } else {
+            self.provider.reasoning_effort()
+        }
+    }
+
     fn upstream_provider(&self) -> Option<String> {
         self.upstream_provider.clone()
     }

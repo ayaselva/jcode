@@ -266,6 +266,12 @@ pub trait TuiState {
     // ---- Provider ----
     fn provider_name(&self) -> String;
     fn provider_model(&self) -> String;
+    /// Active reasoning-effort level for the current session (remote sessions
+    /// report the server-side value), or `None` when the route has no reasoning
+    /// effort. The compact single-line header renders it next to the model.
+    fn reasoning_effort(&self) -> Option<String> {
+        None
+    }
     /// Upstream provider (e.g., which provider OpenRouter routed to)
     fn upstream_provider(&self) -> Option<String>;
     /// Active transport/connection type (websocket/https/etc.)
