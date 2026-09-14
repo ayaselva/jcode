@@ -801,6 +801,10 @@ async fn handle_remote_key_internal(
                         .await;
                 }
             }
+        } else if let Some(message) = input::take_last_queued_message_for_steer(app) {
+            // Ctrl+Enter is the "send now" chord, so with nothing typed it
+            // steers the message that is already waiting in the queue.
+            app.send_interleave_now(message, Vec::new(), remote).await;
         }
         return Ok(());
     }
@@ -2587,6 +2591,10 @@ async fn handle_remote_key_internal(
                             .await;
                     }
                 }
+            } else if let Some(message) = input::take_last_queued_message_for_steer(app) {
+                // Enter with nothing typed steers the newest queued message into
+                // the running turn instead of waiting for the turn to finish.
+                app.send_interleave_now(message, Vec::new(), remote).await;
             }
         }
         KeyCode::Up | KeyCode::PageUp => {

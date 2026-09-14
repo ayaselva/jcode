@@ -1739,6 +1739,11 @@ pub(super) fn handle_alternate_enter(app: &mut App) {
     }
 
     if app.input.is_empty() {
+        // Ctrl+Enter is the "send now" chord, so with nothing typed it steers
+        // the message that is already waiting in the queue.
+        if let Some(message) = take_last_queued_message_for_steer(app) {
+            stage_local_interleave(app, message, Vec::new());
+        }
         return;
     }
 
@@ -2508,17 +2513,22 @@ pub(super) fn handle_enter(app: &mut App) -> bool {
     if app.activate_picker_from_preview() {
         return true;
     }
-    if !app.input.is_empty() {
-        if route_prompt_to_new_session_local(app) {
-            return true;
+    if app.input.is_empty() {
+        // Nothing to submit, so Enter means "steer the message I just queued".
+        if let Some(message) = take_last_queued_message_for_steer(app) {
+            stage_local_interleave(app, message, Vec::new());
         }
-        match send_action(app, false) {
-            SendAction::Submit => app.submit_input(),
-            SendAction::Queue => queue_message(app),
-            SendAction::Interleave => {
-                let prepared = take_prepared_input(app);
-                stage_local_interleave(app, prepared.expanded, prepared.images);
-            }
+        return true;
+    }
+    if route_prompt_to_new_session_local(app) {
+        return true;
+    }
+    match send_action(app, false) {
+        SendAction::Submit => app.submit_input(),
+        SendAction::Queue => queue_message(app),
+        SendAction::Interleave => {
+            let prepared = take_prepared_input(app);
+            stage_local_interleave(app, prepared.expanded, prepared.images);
         }
     }
     true
@@ -2656,6 +2666,30 @@ pub(super) fn stage_local_interleave(
     app.interleave_message = Some(content);
     app.interleave_images = images;
     app.set_status_notice("⏭ Sending now (interleave)");
+}
+
+/// Take the newest queued message so the caller can steer it into the running
+/// turn right away.
+///
+/// Enter (or Ctrl+Enter) on an empty prompt while the agent is working means
+/// "send the message I just queued now" rather than waiting for the turn to
+/// finish, so the caller does not have to retrieve it, retype it, and resend.
+/// The message leaves the queue because it becomes a pending steer; leaving it
+/// queued would send it twice. Returns `None` when there is nothing to steer:
+/// no turn is running, the queue is empty, or an interleave is already on its
+/// way (staging over it would silently drop that one).
+pub(super) fn take_last_queued_message_for_steer(app: &mut App) -> Option<String> {
+    if !app.is_processing || app.interleave_message.is_some() {
+        return None;
+    }
+    if app
+        .queued_messages
+        .last()
+        .is_none_or(|message| message.trim().is_empty())
+    {
+        return None;
+    }
+    app.queued_messages.pop()
 }
 
 fn attach_image(app: &mut App, media_type: String, base64_data: String) {

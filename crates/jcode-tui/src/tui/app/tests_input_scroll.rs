@@ -357,6 +357,130 @@ fn test_remote_ctrl_enter_queues_while_processing() {
     assert_eq!(app.queued_messages()[0], "hi");
 }
 
+/// Enter on an empty prompt means "steer the message I just queued": the newest
+/// queued message goes out mid-turn instead of waiting for the turn to finish.
+#[test]
+fn test_remote_empty_enter_steers_newest_queued_message() {
+    let _env_lock = crate::storage::lock_test_env();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.queued_messages.push("first".to_string());
+    app.queued_messages.push("newest".to_string());
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+        .unwrap();
+
+    assert!(app.input().is_empty());
+    assert_eq!(app.queued_messages().len(), 1);
+    assert_eq!(app.queued_messages()[0], "first");
+    assert_eq!(app.pending_soft_interrupts, vec!["newest"]);
+}
+
+#[test]
+fn test_remote_empty_ctrl_enter_steers_newest_queued_message() {
+    let _env_lock = crate::storage::lock_test_env();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.queued_messages.push("first".to_string());
+    app.queued_messages.push("newest".to_string());
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::CONTROL, &mut remote))
+        .unwrap();
+
+    assert_eq!(app.queued_messages().len(), 1);
+    assert_eq!(app.queued_messages()[0], "first");
+    assert_eq!(app.pending_soft_interrupts, vec!["newest"]);
+}
+
+#[test]
+fn test_remote_empty_enter_keeps_queue_when_idle() {
+    // An idle session dispatches its queue when the turn ends, so Enter must not
+    // steal a message out of it before that happens.
+    let _env_lock = crate::storage::lock_test_env();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.queued_messages.push("queued".to_string());
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+        .unwrap();
+
+    assert_eq!(app.queued_messages().len(), 1);
+    assert!(app.pending_soft_interrupts.is_empty());
+}
+
+#[test]
+fn test_remote_empty_enter_keeps_a_staged_interleave() {
+    // Staging over a pending interleave would silently drop it, so a steer
+    // waits for the staged message to leave first.
+    let _env_lock = crate::storage::lock_test_env();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.interleave_message = Some("already staged".to_string());
+    app.queued_messages.push("queued".to_string());
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+        .unwrap();
+
+    assert_eq!(app.interleave_message.as_deref(), Some("already staged"));
+    assert_eq!(app.queued_messages().len(), 1);
+    assert!(app.pending_soft_interrupts.is_empty());
+}
+
+#[test]
+fn test_local_empty_enter_steers_newest_queued_message() {
+    let _env_lock = crate::storage::lock_test_env();
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.queued_messages.push("first".to_string());
+    app.queued_messages.push("newest".to_string());
+
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+        .unwrap();
+
+    assert_eq!(app.interleave_message.as_deref(), Some("newest"));
+    assert_eq!(app.queued_messages().len(), 1);
+    assert_eq!(app.queued_messages()[0], "first");
+}
+
+#[test]
+fn test_local_empty_ctrl_enter_steers_newest_queued_message() {
+    let _env_lock = crate::storage::lock_test_env();
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.queued_messages.push("first".to_string());
+    app.queued_messages.push("newest".to_string());
+
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
+        .unwrap();
+
+    assert_eq!(app.interleave_message.as_deref(), Some("newest"));
+    assert_eq!(app.queued_messages().len(), 1);
+    assert_eq!(app.queued_messages()[0], "first");
+}
+
+#[test]
+fn test_local_empty_enter_without_queue_stages_nothing() {
+    let _env_lock = crate::storage::lock_test_env();
+    let mut app = create_test_app();
+    app.is_processing = true;
+
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+        .unwrap();
+
+    assert!(app.interleave_message.is_none());
+}
+
 #[test]
 fn test_remote_cmd_enter_queues_while_processing() {
     let rt = tokio::runtime::Runtime::new().unwrap();
