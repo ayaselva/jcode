@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Installeer de PC001 Exa-koppeling voor jcode op deze machine. Idempotent:
+# Installeer de PC001-koppeling voor jcode op deze machine. Idempotent:
 # bouwen, publiceren naar ~/.jcode/builds/current, de Doppler-launcher
-# installeren en [websearch] engine = "exa" in de config zetten.
+# installeren, [websearch] engine = "exa" zetten en het
+# [providers.huggingface-cerebras]-profiel toevoegen.
 #
 # Gebruik:
 #   pc001/install.sh                 # bouwen + publiceren + wrapper + config + verify
@@ -25,7 +26,7 @@ for arg in "$@"; do
     --no-verify) VERIFY=0 ;;
     --skip-guardrails) GUARDRAILS=0 ;;
     -h|--help)
-      sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -78,18 +79,25 @@ install -d "${bin_dir}"
 install -m 0755 "${here}/jcode-launcher" "${bin_dir}/jcode"
 
 config="${jcode_home}/config.toml"
+provider_block="${here}/providers/huggingface-cerebras.toml"
+provider_entry='openai-compatible:huggingface-cerebras'
+
 if [[ -f "${config}" ]]; then
   backup="${config}.bak-exa-$(date -u +%Y%m%dT%H%M%SZ)"
   cp -p "${config}" "${backup}"
-  log "config: engine = exa in ${config} (backup ${backup##*/})"
+  log "config: engine = exa + provider huggingface-cerebras in ${config} (backup ${backup##*/})"
 else
-  log "config: ${config} aanmaken met [websearch] engine = exa"
+  log "config: ${config} aanmaken met [websearch] engine = exa en [providers.huggingface-cerebras]"
 fi
 python3 "${here}/config-set-engine.py" "${config}" exa '"bing"'
+python3 "${here}/config-add-provider.py" "${config}" "${provider_block}" "${provider_entry}"
 
 log "geïnstalleerd: ${dest}"
 printf 'versie: %s\n' "${label}"
 printf 'engine: %s\n' "$(python3 "${here}/config-set-engine.py" --get "${config}")"
+printf 'provider: %s (default_model %s)\n' \
+  "$(python3 "${here}/config-add-provider.py" --get-picker "${config}" "${provider_entry}")" \
+  "$(python3 "${here}/config-add-provider.py" --get "${config}" huggingface-cerebras)"
 
 if (( VERIFY )); then
   log "verificatie"

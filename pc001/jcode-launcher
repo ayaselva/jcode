@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # PC001 jcode launcher.
 #
-# Wraps the published jcode binary so that EXA_API_KEY is resolved at *runtime*
-# (via the shared exa-cli helper: environment first, otherwise the Doppler
-# `infra/all` secret, 15-minute cache) and only ever lives in the process
-# environment. The key is never written to a file, a commit, a log or the
-# command line.
+# Wraps the published jcode binary so that the provider keys are resolved at
+# *runtime* from the shared helpers and only ever live in the process
+# environment:
+#
+#   EXA_API_KEY         websearch via `exa-cli print-key` (environment first,
+#                       otherwise the Doppler `infra/all` secret, 15-min cache).
+#   CEREBRAS_API_KEY    Hugging Face router routed over Cerebras, via
+#                       `huggingface-cerebras-api-key` (Doppler `infra/all`,
+#                       shape-checked as an `hf_*` token).
+#
+# A key is never written to a file, a commit, a log or the command line.
 #
 # `install.sh` installs this file as ~/.local/bin/jcode and points it at
 # ~/.jcode/builds/current/jcode (override with JCODE_REAL_BIN). jcode's own
@@ -18,7 +24,7 @@ REAL_BIN="${JCODE_REAL_BIN:-${JCODE_HOME:-$HOME/.jcode}/builds/current/jcode}"
 first="${1:-}"
 case "$first" in
   # Self-contained commands that never touch the network tooling: skip the
-  # (cheap, but not free) Doppler lookup.
+  # (cheap, but not free) Doppler lookups.
   --version|-v|version|help|--help|-h)
     exec "$REAL_BIN" "$@"
     ;;
@@ -28,6 +34,15 @@ if [[ -z "${EXA_API_KEY:-}" ]] && command -v exa-cli >/dev/null 2>&1; then
   # `exa-cli print-key` prints the raw key on stdout for command substitution.
   if key="$(exa-cli print-key 2>/dev/null)" && [[ -n "$key" ]]; then
     export EXA_API_KEY="$key"
+  fi
+  unset key
+fi
+
+if [[ -z "${CEREBRAS_API_KEY:-}" ]] && command -v huggingface-cerebras-api-key >/dev/null 2>&1; then
+  # The helper prints the raw Hugging Face token on stdout, or exits non-zero
+  # when Doppler has no valid token.
+  if key="$(huggingface-cerebras-api-key 2>/dev/null)" && [[ -n "$key" ]]; then
+    export CEREBRAS_API_KEY="$key"
   fi
   unset key
 fi
