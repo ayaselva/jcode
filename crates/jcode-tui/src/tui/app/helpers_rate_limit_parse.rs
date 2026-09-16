@@ -3,10 +3,45 @@ use std::time::Duration;
 
 use super::parse_clock_time_to_duration;
 
+/// Wait to honor when a transient in-flight budget rejection carries no usable
+/// `Retry-After`; OpenRouter's own hint for that state is two minutes.
+const IN_FLIGHT_BUDGET_DEFAULT_WAIT: Duration = Duration::from_secs(120);
+
+/// Seconds from an explicit `Retry-After`, in either its header spelling
+/// (`retry-after: 120`) or the JSON one OpenRouter echoes in the error body
+/// (`"retry-after":"120"`).
+///
+/// Every occurrence is tried because the first mention is often prose ("see the
+/// Retry-After header") rather than the value itself.
+fn parse_retry_after_seconds(error_lower: &str) -> Option<u64> {
+    error_lower
+        .match_indices("retry-after")
+        .find_map(|(idx, marker)| {
+            let rest = error_lower[idx + marker.len()..]
+                .trim_start_matches([':', '"', '\'', '=', ' ', '\t']);
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            match digits.parse::<u64>() {
+                Ok(secs) if secs > 0 && secs < 86400 => Some(secs),
+                _ => None,
+            }
+        })
+}
+
 /// Parse rate limit reset time from error message
 /// Returns the Duration until rate limit resets, if this is a rate limit error
 pub(crate) fn parse_rate_limit_error(error: &str) -> Option<Duration> {
     let error_lower = error.to_lowercase();
+
+    // A transient in-flight budget cap is a throttle, not a spent balance: the
+    // provider rejects with `402` and no rate-limit wording at all, but asks to
+    // resend after its `Retry-After`. Treat it as a rate limit so the existing
+    // wait-and-resume machinery picks the turn back up by itself.
+    if jcode_provider_core::is_transient_in_flight_budget_error(&error_lower) {
+        return Some(
+            parse_retry_after_seconds(&error_lower)
+                .map_or(IN_FLIGHT_BUDGET_DEFAULT_WAIT, Duration::from_secs),
+        );
+    }
 
     if !error_lower.contains("rate limit")
         && !error_lower.contains("rate_limit")
@@ -116,6 +151,30 @@ mod rate_limit_parse_tests {
             parse_rate_limit_error(err),
             Some(Duration::from_secs(2 * 3600 + 5 * 60))
         );
+    }
+
+    #[test]
+    fn in_flight_budget_402_waits_for_the_servers_retry_after() {
+        let err = "OpenAI-compatible chat request failed\n  status: 402 Payment Required\n  \
+            response: {\"error\":{\"message\":\"This request would exceed your available credits \
+            given your current in-flight requests. Retry after in-flight requests settle, or add \
+            credits.\",\"code\":402,\"metadata\":{\"reason\":\"in_flight_budget_exhausted\",\
+            \"remedy_hint\":\"Retry after your in-flight requests settle (see the Retry-After \
+            header).\",\"headers\":{\"Retry-After\":\"120\"}}}}";
+        assert_eq!(parse_rate_limit_error(err), Some(Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn in_flight_budget_402_without_a_hint_falls_back_to_the_default_wait() {
+        let err = "status: 402 payment required {\"metadata\":{\"reason\":\
+            \"in_flight_budget_exhausted\"}}";
+        assert_eq!(parse_rate_limit_error(err), Some(Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn a_spent_balance_402_is_not_treated_as_a_wait() {
+        let err = "status: 402 payment required: this request requires more credits";
+        assert_eq!(parse_rate_limit_error(err), None);
     }
 
     #[test]

@@ -1,6 +1,14 @@
 //! Deterministic non-retryable auto-poke error classification.
 
 pub(crate) fn is_non_retryable_auto_poke_error(error: &str) -> bool {
+    // A `402` that only reports a transient in-flight budget cap (OpenRouter's
+    // `in_flight_budget_exhausted`) clears on its own and carries a
+    // `Retry-After`, so it must not trip the billing markers below and stop the
+    // loop. It is handled like a rate limit: wait out the hint, then resend.
+    if jcode_provider_core::is_transient_in_flight_budget_error(error) {
+        return false;
+    }
+
     let lower = error.to_ascii_lowercase();
 
     // These failures are deterministic for the current request/session shape. Retrying the same

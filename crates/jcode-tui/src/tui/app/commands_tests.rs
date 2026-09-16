@@ -115,6 +115,21 @@ fn openrouter_402_payment_required_is_non_retryable() {
 }
 
 #[test]
+fn openrouter_in_flight_budget_402_keeps_auto_poke_alive() {
+    use super::is_non_retryable_auto_poke_error;
+    let err = "OpenAI-compatible chat request failed\n  endpoint: \
+        https://openrouter.ai/api/v1/chat/completions\n  model: deepseek/deepseek-v4.1-flash\n  \
+        auth: OPENROUTER_API_KEY\n  status: 402 Payment Required\n  response: \
+        {\"error\":{\"message\":\"This request would exceed your available credits given your \
+        current in-flight requests. Retry after in-flight requests settle, or add credits.\",\
+        \"code\":402,\"metadata\":{\"reason\":\"in_flight_budget_exhausted\",\
+        \"headers\":{\"Retry-After\":\"120\"}}}}";
+    // Transient concurrency cap, not a spent balance: the same request succeeds
+    // once the in-flight requests settle, so the loop must wait instead of stop.
+    assert!(!is_non_retryable_auto_poke_error(err));
+}
+
+#[test]
 fn transient_server_error_remains_retryable_for_auto_poke() {
     use super::is_non_retryable_auto_poke_error;
     let err = "OpenAI-compatible chat request failed\n  status: 503 Service Unavailable";

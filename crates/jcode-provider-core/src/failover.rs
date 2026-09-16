@@ -66,8 +66,39 @@ fn contains_independent_status_code(haystack: &str, code: &str) -> bool {
     })
 }
 
+/// Whether a billing-shaped rejection is only a *transient* in-flight budget
+/// cap rather than an exhausted balance.
+///
+/// OpenRouter answers `402 Payment Required` for two very different states: a
+/// spent balance (terminal until the user tops up) and
+/// `in_flight_budget_exhausted`, which merely says too many of this key's
+/// requests are in flight right now and carries a `Retry-After`. The second
+/// clears by itself, so it must not stop auto-poke, must not mark the provider
+/// unavailable, and must not switch models: the same request succeeds once the
+/// in-flight requests settle.
+pub fn is_transient_in_flight_budget_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+
+    [
+        "in_flight_budget_exhausted",
+        "openrouter_in_flight_budget",
+        "in-flight budget",
+        "in-flight requests settle",
+        "in flight requests settle",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 pub fn classify_failover_error_message(message: &str) -> FailoverDecision {
     let lower = message.to_ascii_lowercase();
+
+    // A transient in-flight budget cap is not an exhausted account: waiting out
+    // the server's `Retry-After` on the *current* provider is both correct and
+    // cheaper than resending the whole context to another one.
+    if is_transient_in_flight_budget_error(&lower) {
+        return FailoverDecision::None;
+    }
 
     let request_size_or_context = [
         "context length",
@@ -169,6 +200,29 @@ mod tests {
         assert_eq!(
             classify_failover_error_message("context length exceeded"),
             FailoverDecision::RetryNextProvider
+        );
+    }
+
+    #[test]
+    fn classifier_keeps_transient_in_flight_budget_on_the_same_provider() {
+        let message = "OpenAI-compatible chat request failed\n  status: 402 Payment Required\n  \
+            response: {\"error\":{\"message\":\"This request would exceed your available credits \
+            given your current in-flight requests. Retry after in-flight requests settle, or add \
+            credits.\",\"code\":402,\"metadata\":{\"reason\":\"in_flight_budget_exhausted\"}}}";
+        assert!(is_transient_in_flight_budget_error(message));
+        assert_eq!(
+            classify_failover_error_message(message),
+            FailoverDecision::None
+        );
+    }
+
+    #[test]
+    fn classifier_still_marks_a_spent_balance_unavailable() {
+        let message = "402 Payment Required: your credit balance is too low";
+        assert!(!is_transient_in_flight_budget_error(message));
+        assert_eq!(
+            classify_failover_error_message(message),
+            FailoverDecision::RetryAndMarkUnavailable
         );
     }
 
