@@ -114,6 +114,35 @@ fn appending_is_not_treated_as_destructive() {
 }
 
 #[test]
+fn sink_device_redirects_do_not_cost_a_reflection_turn() {
+    // `> /dev/null` is the most common shell idiom there is. The recursive
+    // protection of `/dev` must not turn it into a denial.
+    for command in [
+        "make > /dev/null",
+        "cargo test 2>/dev/null",
+        "time ./run --once > /dev/null 2>&1",
+        "printf '' > /dev/stdout",
+        "rm -f /dev/null",
+    ] {
+        assert!(
+            level(command).runs_immediately(),
+            "{command:?} must run without a reflection turn"
+        );
+    }
+}
+
+#[test]
+fn real_device_nodes_are_still_catastrophic() {
+    for command in [
+        "dd if=/dev/zero of=/dev/sda",
+        "echo x > /dev/mem",
+        "rm -rf /dev",
+    ] {
+        assert_eq!(level(command), RiskLevel::Catastrophic, "{command:?}");
+    }
+}
+
+#[test]
 fn runtime_computed_targets_require_justification() {
     // We cannot see what $TARGET holds, so we must not assume it is safe.
     assert!(level("rm -rf $TARGET") >= RiskLevel::Confirm);

@@ -145,6 +145,7 @@ pub fn is_catastrophic_target(path: &Path, ctx: &RiskContext) -> bool {
     if SYSTEM_PATHS_PROTECTED_RECURSIVELY
         .iter()
         .any(|p| path.starts_with(p))
+        && !is_sink_device(&path)
     {
         return true;
     }
@@ -178,6 +179,12 @@ pub fn classify_target(
     recursive: bool,
     ctx: &RiskContext,
 ) -> Option<RiskFinding> {
+    // Sink devices are a legitimate redirect destination, never a destruction
+    // target: `> /dev/null` must not cost a reflection turn.
+    if is_sink_device(expanded) {
+        return None;
+    }
+
     // Glob and variable expansion we did not perform: we cannot know the
     // footprint, so escalate rather than guess.
     if raw.contains('*') || raw.contains('?') {
@@ -226,11 +233,7 @@ pub fn classify_target(
     }
 
     // Raw device nodes are never a safe write target.
-    if expanded.starts_with("/dev")
-        && !expanded.starts_with("/dev/null")
-        && !expanded.starts_with("/dev/stdout")
-        && !expanded.starts_with("/dev/stderr")
-    {
+    if expanded.starts_with("/dev") {
         return Some(RiskFinding {
             level: RiskLevel::Catastrophic,
             reason: "writes directly to a device node, which can destroy a \
@@ -271,6 +274,15 @@ fn is_temp_path(path: &Path) -> bool {
     ["/tmp", "/var/tmp", "/private/tmp"]
         .iter()
         .any(|prefix| path.starts_with(prefix))
+}
+
+/// Sink devices hold no data, so opening, truncating, or even removing them
+/// destroys nothing. Without this exemption the recursive protection of `/dev`
+/// denies every `> /dev/null`, which is a routine and entirely safe redirect.
+fn is_sink_device(path: &Path) -> bool {
+    ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/fd"]
+        .iter()
+        .any(|sink| path.starts_with(sink))
 }
 
 #[cfg(test)]

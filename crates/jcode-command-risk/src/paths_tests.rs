@@ -61,6 +61,24 @@ fn root_and_system_paths_are_catastrophic() {
 }
 
 #[test]
+fn sink_devices_are_not_catastrophic() {
+    let ctx = ctx();
+    // These hold no data, so they are a safe redirect destination even though
+    // `/dev` itself is protected recursively.
+    for p in ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/fd/2"] {
+        assert!(
+            !is_catastrophic_target(Path::new(p), &ctx),
+            "{p} destroys nothing"
+        );
+    }
+    // Every other device node stays catastrophic: writing to it can destroy a
+    // filesystem.
+    for p in ["/dev", "/dev/sda", "/dev/mem", "/dev/null/../sda"] {
+        assert!(is_catastrophic_target(Path::new(p), &ctx), "{p}");
+    }
+}
+
+#[test]
 fn credential_stores_inside_home_are_catastrophic() {
     let ctx = ctx();
     for sub in [".ssh", ".gnupg", ".aws", ".config", ".jcode"] {
