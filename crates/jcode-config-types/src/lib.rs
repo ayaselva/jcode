@@ -1072,6 +1072,9 @@ pub enum WebSearchEngine {
     /// `JCODE_SEARXNG_URL` env var) to point at a SearXNG instance. Useful on
     /// hosts where DuckDuckGo/Bing block the request via TLS fingerprinting.
     Searxng,
+    /// Exa semantic search API (`https://api.exa.ai/search`). Requires an API
+    /// key via `exa_api_key` (or the `EXA_API_KEY` env var).
+    Exa,
 }
 
 impl WebSearchEngine {
@@ -1080,6 +1083,7 @@ impl WebSearchEngine {
             Self::Duckduckgo => "duckduckgo",
             Self::Bing => "bing",
             Self::Searxng => "searxng",
+            Self::Exa => "exa",
         }
     }
 
@@ -1088,8 +1092,15 @@ impl WebSearchEngine {
             "duckduckgo" | "ddg" => Some(Self::Duckduckgo),
             "bing" => Some(Self::Bing),
             "searxng" | "searx" => Some(Self::Searxng),
+            "exa" | "exa.ai" => Some(Self::Exa),
             _ => None,
         }
+    }
+}
+
+impl std::fmt::Display for WebSearchEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -1113,6 +1124,10 @@ pub struct WebSearchConfig {
     pub searxng_url: Option<String>,
     /// Environment variable containing the SearXNG base URL.
     pub searxng_url_env: String,
+    /// Optional Exa API key (https://api.exa.ai). Prefer the env var.
+    pub exa_api_key: Option<String>,
+    /// Environment variable containing the Exa API key.
+    pub exa_api_key_env: String,
 }
 
 impl Default for WebSearchConfig {
@@ -1125,6 +1140,8 @@ impl Default for WebSearchConfig {
             bing_market: "en-US".to_string(),
             searxng_url: None,
             searxng_url_env: "JCODE_SEARXNG_URL".to_string(),
+            exa_api_key: None,
+            exa_api_key_env: "EXA_API_KEY".to_string(),
         }
     }
 }

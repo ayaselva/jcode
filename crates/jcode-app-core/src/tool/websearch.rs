@@ -1,11 +1,11 @@
 use super::{Tool, ToolContext, ToolOutput};
-use crate::config::WebSearchEngine;
+use crate::config::{WebSearchConfig, WebSearchEngine};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// Web search using DuckDuckGo or Bing (HTML scraping, with optional Bing API)
+/// Web search using Exa, DuckDuckGo, Bing (HTML scraping, optional Bing API) or SearXNG.
 pub struct WebSearchTool {
     client: reqwest::Client,
 }
@@ -34,6 +34,26 @@ struct SearchResult {
     title: String,
     url: String,
     snippet: String,
+}
+
+/// Results returned by one engine, together with the provenance the caller
+/// reports back to the model (which engine answered, and any request id the
+/// provider returned).
+#[derive(Debug)]
+struct EngineSearch {
+    engine: WebSearchEngine,
+    request_id: Option<String>,
+    results: Vec<SearchResult>,
+}
+
+impl EngineSearch {
+    fn new(engine: WebSearchEngine, results: Vec<SearchResult>) -> Self {
+        Self {
+            engine,
+            request_id: None,
+            results,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -69,8 +89,8 @@ impl Tool for WebSearchTool {
                 },
                 "engine": {
                     "type": "string",
-                    "enum": ["duckduckgo", "bing", "searxng"],
-                    "description": "Engine. Defaults to duckduckgo; bing uses JCODE_BING_API_KEY, searxng uses JCODE_SEARXNG_URL."
+                    "enum": ["exa", "duckduckgo", "bing", "searxng"],
+                    "description": "Engine. Defaults to exa; exa uses JCODE_EXA_API_KEY/EXA_API_KEY, bing uses JCODE_BING_API_KEY, searxng uses JCODE_SEARXNG_URL."
                 },
                 "bing_market": {
                     "type": "string",
@@ -85,8 +105,16 @@ impl Tool for WebSearchTool {
         let num_results = params.num_results.unwrap_or(8).min(20);
 
         let config = crate::config::config();
+        // A missing API key on the *primary* engine is a configuration error, not
+        // a transient engine failure: fail loudly instead of silently answering
+        // from a fallback engine.
+        let primary_engine = params.engine.unwrap_or(config.websearch.engine);
+        if primary_engine == WebSearchEngine::Exa {
+            resolve_exa_api_key(&config.websearch)?;
+        }
+
         let mut engines = Vec::new();
-        engines.push(params.engine.unwrap_or(config.websearch.engine));
+        engines.push(primary_engine);
         engines.extend(config.websearch.fallback_engines.iter().copied());
         engines.dedup();
 
@@ -95,7 +123,7 @@ impl Tool for WebSearchTool {
             .as_deref()
             .unwrap_or(&config.websearch.bing_market);
         let mut last_error = None;
-        let mut results = Vec::new();
+        let mut search = None;
         for (index, engine) in engines.into_iter().enumerate() {
             let allow_bing_api = index == 0;
             match self
@@ -113,8 +141,8 @@ impl Tool for WebSearchTool {
                 .await
             {
                 Ok(found) => {
-                    if !found.is_empty() {
-                        results = found;
+                    if !found.results.is_empty() {
+                        search = Some(found);
                         break;
                     }
                 }
@@ -122,28 +150,26 @@ impl Tool for WebSearchTool {
             }
         }
 
-        if results.is_empty()
-            && let Some(err) = last_error
-        {
-            return Err(err);
-        }
-
-        if results.is_empty() {
+        let Some(search) = search else {
+            if let Some(err) = last_error {
+                return Err(err);
+            }
             return Ok(ToolOutput::new(format!(
                 "No results found for: {}\n\n\
-                 If results are consistently empty on this machine, the default \
+                 If results are consistently empty on this machine, the keyless \
                  DuckDuckGo/Bing engines may be blocked here by TLS fingerprinting \
                  or IP reputation (common on Linux/servers). Workarounds:\n\
+                 - Configure an Exa API key (EXA_API_KEY) and use engine \"exa\".\n\
                  - Point at a SearXNG instance: set `websearch.searxng_url` (or \
                  JCODE_SEARXNG_URL) and use engine \"searxng\".\n\
                  - Or provide a Bing Search API key via JCODE_BING_API_KEY.",
                 params.query
             )));
-        }
+        };
 
         let mut output = format!("Search results for: {}\n\n", params.query);
 
-        for (i, result) in results.iter().enumerate() {
+        for (i, result) in search.results.iter().enumerate() {
             output.push_str(&format!(
                 "{}. **{}**\n   {}\n   {}\n\n",
                 i + 1,
@@ -152,6 +178,12 @@ impl Tool for WebSearchTool {
                 result.snippet
             ));
         }
+
+        output.push_str(&format!("provider: {}", search.engine));
+        if let Some(request_id) = search.request_id.as_deref() {
+            output.push_str(&format!(" (requestId {request_id})"));
+        }
+        output.push('\n');
 
         Ok(ToolOutput::new(output))
     }
@@ -165,14 +197,22 @@ impl WebSearchTool {
         num_results: usize,
         bing: BingSearchOptions<'_>,
         allow_bing_api: bool,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> Result<EngineSearch> {
         match engine {
-            WebSearchEngine::Duckduckgo => self.search_duckduckgo(query, num_results).await,
-            WebSearchEngine::Bing => {
+            WebSearchEngine::Duckduckgo => Ok(EngineSearch::new(
+                engine,
+                self.search_duckduckgo(query, num_results).await?,
+            )),
+            WebSearchEngine::Bing => Ok(EngineSearch::new(
+                engine,
                 self.search_bing(query, num_results, bing, allow_bing_api)
-                    .await
-            }
-            WebSearchEngine::Searxng => self.search_searxng(query, num_results).await,
+                    .await?,
+            )),
+            WebSearchEngine::Searxng => Ok(EngineSearch::new(
+                engine,
+                self.search_searxng(query, num_results).await?,
+            )),
+            WebSearchEngine::Exa => self.search_exa(query, num_results).await,
         }
     }
 
@@ -381,6 +421,137 @@ impl WebSearchTool {
 
         Ok(parse_searxng_results(parsed, num_results))
     }
+
+    /// Query the Exa search API (https://api.exa.ai/search). Exa is a hosted
+    /// semantic search API: it needs an API key, but in exchange it is not
+    /// subject to the scraping blocks that hit the keyless HTML engines.
+    async fn search_exa(&self, query: &str, num_results: usize) -> Result<EngineSearch> {
+        let config = crate::config::config();
+        let api_key = resolve_exa_api_key(&config.websearch)?;
+
+        let response = self
+            .client
+            .post(EXA_SEARCH_ENDPOINT)
+            .header("x-api-key", api_key)
+            .json(&exa_request_body(query, num_results))
+            .send()
+            .await?;
+
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        parse_exa_http_response(status, &body, num_results)
+    }
+}
+
+const EXA_SEARCH_ENDPOINT: &str = "https://api.exa.ai/search";
+
+/// Resolve the Exa API key: the explicit config value wins, then the configured
+/// environment variable (default `EXA_API_KEY`), then the `exa.env` credential
+/// file — the same lookup providers use. The key is never logged.
+fn resolve_exa_api_key(config: &WebSearchConfig) -> Result<String> {
+    if let Some(key) = config
+        .exa_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    {
+        return Ok(key.to_string());
+    }
+
+    crate::provider_catalog::load_api_key_from_env_or_config(&config.exa_api_key_env, "exa.env")
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Exa engine selected but no API key is available. Set `websearch.exa_api_key` \
+                 in your config, or export the {} environment variable (the PC001 launcher \
+                 fetches it from the Doppler `infra/all` secret).",
+                config.exa_api_key_env
+            )
+        })
+}
+
+/// Request body for `POST /search`. `type: "auto"` lets Exa pick the search
+/// mode; `contents.highlights` asks for the query-relevant snippets we show as
+/// result text.
+fn exa_request_body(query: &str, num_results: usize) -> Value {
+    json!({
+        "query": query,
+        "type": "auto",
+        "numResults": num_results,
+        "contents": { "highlights": true }
+    })
+}
+
+/// Turn a raw Exa HTTP response into an [`EngineSearch`]. Kept separate from the
+/// request so the success, error-status and malformed-body paths are all
+/// unit-testable without touching the network.
+fn parse_exa_http_response(status: u16, body: &str, max_results: usize) -> Result<EngineSearch> {
+    if !(200..300).contains(&status) {
+        let detail = truncate_error_detail(body);
+        let detail = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", jcode_base::message::redact_secrets(&detail))
+        };
+        return Err(anyhow::anyhow!(
+            "Exa search failed with status {status}{detail}"
+        ));
+    }
+
+    let mut parsed: ExaResponse = serde_json::from_str(body)
+        .map_err(|err| anyhow::anyhow!("Exa returned a non-JSON search response ({err})"))?;
+
+    let request_id = parsed
+        .request_id
+        .take()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+
+    Ok(EngineSearch {
+        engine: WebSearchEngine::Exa,
+        request_id,
+        results: parse_exa_results(parsed, max_results),
+    })
+}
+
+/// Keep provider error bodies short: they are surfaced to the user (and the
+/// model) and are usually a one-line JSON error or an HTML page.
+fn truncate_error_detail(body: &str) -> String {
+    const MAX: usize = 300;
+    let trimmed = body.trim();
+    match trimmed.char_indices().nth(MAX) {
+        Some((index, _)) => format!("{}…", &trimmed[..index]),
+        None => trimmed.to_string(),
+    }
+}
+
+/// Map a parsed Exa response to `SearchResult`s: the snippet is the joined
+/// highlights, entries without a URL are dropped, and the list is capped.
+fn parse_exa_results(response: ExaResponse, max_results: usize) -> Vec<SearchResult> {
+    response
+        .results
+        .into_iter()
+        .filter(|result| !result.url.trim().is_empty())
+        .take(max_results)
+        .map(|result| {
+            let snippet = result
+                .highlights
+                .into_iter()
+                .map(|highlight| highlight.trim().to_string())
+                .filter(|highlight| !highlight.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let title = if result.title.trim().is_empty() {
+                result.url.clone()
+            } else {
+                result.title
+            };
+            SearchResult {
+                title,
+                url: result.url,
+                snippet,
+            }
+        })
+        .collect()
 }
 
 /// Map a parsed SearXNG JSON response to `SearchResult`s, dropping entries with
@@ -457,6 +628,26 @@ mod search_regex {
 struct SearxngResponse {
     #[serde(default)]
     results: Vec<SearxngResult>,
+}
+
+/// Shape of a `POST https://api.exa.ai/search` response.
+#[derive(Deserialize)]
+struct ExaResponse {
+    #[serde(default, rename = "requestId")]
+    request_id: Option<String>,
+    #[serde(default)]
+    results: Vec<ExaResult>,
+}
+
+#[derive(Deserialize)]
+struct ExaResult {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    /// Query-relevant snippets, requested via `contents.highlights`.
+    #[serde(default)]
+    highlights: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -833,5 +1024,128 @@ mod tests {
             Some(WebSearchEngine::Searxng)
         );
         assert_eq!(WebSearchEngine::Searxng.as_str(), "searxng");
+    }
+
+    #[test]
+    fn exa_request_body_asks_for_highlights() {
+        let body = exa_request_body("rust async", 5);
+        assert_eq!(body["query"], "rust async");
+        assert_eq!(body["type"], "auto");
+        assert_eq!(body["numResults"], 5);
+        assert_eq!(body["contents"]["highlights"], true);
+    }
+
+    #[test]
+    fn parses_exa_search_response() {
+        // Shape of a real Exa /search response (highlights requested).
+        let body = r#"{
+            "requestId": "01a1b2c3-deadbeef",
+            "results": [
+                {
+                    "title": "Exa — The Search Engine for AI",
+                    "url": "https://exa.ai/",
+                    "highlights": ["Exa is a search engine built for AI.", "Semantic search."]
+                },
+                {
+                    "url": "https://docs.exa.ai/reference/search",
+                    "highlights": []
+                },
+                { "title": "no url", "url": "  ", "highlights": ["dropped"] }
+            ]
+        }"#;
+
+        let search = parse_exa_http_response(200, body, 10).unwrap();
+        assert_eq!(search.engine, WebSearchEngine::Exa);
+        assert_eq!(search.request_id.as_deref(), Some("01a1b2c3-deadbeef"));
+        assert_eq!(search.results.len(), 2, "entry without url is dropped");
+        assert_eq!(search.results[0].title, "Exa — The Search Engine for AI");
+        assert_eq!(search.results[0].url, "https://exa.ai/");
+        assert_eq!(
+            search.results[0].snippet,
+            "Exa is a search engine built for AI. Semantic search."
+        );
+        // Missing title falls back to the URL, missing highlights to "".
+        assert_eq!(
+            search.results[1].title,
+            "https://docs.exa.ai/reference/search"
+        );
+        assert_eq!(search.results[1].snippet, "");
+    }
+
+    #[test]
+    fn exa_results_respect_limit() {
+        let results = (0..10)
+            .map(|i| {
+                json!({
+                    "title": format!("t{i}"),
+                    "url": format!("https://x/{i}"),
+                    "highlights": ["h"]
+                })
+            })
+            .collect::<Vec<_>>();
+        let body = json!({ "results": results }).to_string();
+        let search = parse_exa_http_response(200, &body, 3).unwrap();
+        assert_eq!(search.results.len(), 3);
+        assert_eq!(search.request_id, None);
+    }
+
+    #[test]
+    fn exa_error_status_is_reported() {
+        let err = parse_exa_http_response(401, r#"{"error":"Invalid API key"}"#, 5)
+            .expect_err("a 401 must not parse as results");
+        let message = err.to_string();
+        assert!(message.contains("401"), "status missing from: {message}");
+        assert!(
+            message.contains("Invalid API key"),
+            "provider detail missing from: {message}"
+        );
+    }
+
+    #[test]
+    fn exa_non_json_body_is_reported() {
+        let err = parse_exa_http_response(200, "<html>gateway</html>", 5)
+            .expect_err("a non-JSON body must not parse as results");
+        assert!(
+            err.to_string().contains("non-JSON"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn missing_exa_key_is_a_clear_error() {
+        // A surely-unset variable name keeps the lookup off the local `exa.env`.
+        let config = WebSearchConfig {
+            exa_api_key: None,
+            exa_api_key_env: "JCODE_TEST_UNSET_EXA_API_KEY".to_string(),
+            ..WebSearchConfig::default()
+        };
+        let err = resolve_exa_api_key(&config).expect_err("no key available");
+        let message = err.to_string();
+        assert!(message.contains("Exa engine selected"), "{message}");
+        assert!(
+            message.contains("JCODE_TEST_UNSET_EXA_API_KEY"),
+            "the missing variable should be named: {message}"
+        );
+    }
+
+    #[test]
+    fn configured_exa_key_wins_over_environment() {
+        let config = WebSearchConfig {
+            exa_api_key: Some("  from-config  ".to_string()),
+            exa_api_key_env: "JCODE_TEST_UNSET_EXA_API_KEY".to_string(),
+            ..WebSearchConfig::default()
+        };
+        assert_eq!(resolve_exa_api_key(&config).unwrap(), "from-config");
+    }
+
+    #[test]
+    fn websearch_engine_parses_exa() {
+        assert_eq!(WebSearchEngine::parse("exa"), Some(WebSearchEngine::Exa));
+        assert_eq!(
+            WebSearchEngine::parse(" EXA.AI "),
+            Some(WebSearchEngine::Exa)
+        );
+        assert_eq!(WebSearchEngine::Exa.as_str(), "exa");
+        assert_eq!(WebSearchEngine::Exa.to_string(), "exa");
     }
 }

@@ -293,8 +293,8 @@ kv_cache_miss_notices = true
 update_channel = "stable"
 
 [websearch]
-# Preferred websearch engine: "duckduckgo", "bing", or "searxng".
-engine = "duckduckgo"
+# Preferred websearch engine: "duckduckgo", "bing", "searxng", or "exa".
+engine = "exa"
 # Keyless HTML engines to try if the preferred engine fails. Default falls back to Bing HTML.
 fallback_engines = ["bing"]
 # Bring your own Bing Search API key for primary Bing searches. Prefer using an env var.
@@ -303,6 +303,11 @@ fallback_engines = ["bing"]
 # bing_api_key = ""
 # Bing market/region, for example "en-US" or "zh-CN".
 bing_market = "en-US"
+# Exa semantic search (https://api.exa.ai). The "exa" engine POSTs to
+# /search and needs an API key: put it in the EXA_API_KEY environment
+# variable (the PC001 launcher fetches it from Doppler) or set it here.
+# exa_api_key_env = "EXA_API_KEY"
+# exa_api_key = ""
 # SearXNG instance for the "searxng" engine. On some hosts (commonly Linux),
 # DuckDuckGo and Bing block scraped requests via TLS fingerprinting / IP
 # reputation and return an anti-bot page with no results. Pointing at a SearXNG
