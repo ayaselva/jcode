@@ -55,7 +55,7 @@ if (( BUILD )); then
   (cd "${repo}" && scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode)
 fi
 
-binary="${repo}/target/selfdev/jcode"
+binary="${CARGO_TARGET_DIR:-${repo}/target}/selfdev/jcode"
 if [[ ! -x "${binary}" ]]; then
   echo "install.sh: geen binary op ${binary}" >&2
   exit 1
