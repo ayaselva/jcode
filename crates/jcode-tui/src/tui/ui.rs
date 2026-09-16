@@ -179,6 +179,10 @@ static LAST_MAX_SCROLL: AtomicUsize = AtomicUsize::new(0);
 /// the real decision is written back every frame, so steady state is unaffected.
 #[cfg(not(test))]
 static LAST_CHAT_SCROLLBAR_VISIBLE: AtomicUsize = AtomicUsize::new(1);
+/// Rows the inline swarm strip reserved above the status line on the most
+/// recent frame (see [`swarm_strip_band`]).
+#[cfg(not(test))]
+static LAST_SWARM_STRIP_BAND_HEIGHT: AtomicUsize = AtomicUsize::new(0);
 /// Total line count in the pinned diff/content pane (set during render).
 #[cfg(not(test))]
 static PINNED_PANE_TOTAL_LINES: AtomicUsize = AtomicUsize::new(0);
@@ -226,6 +230,7 @@ static LAST_USER_PROMPT_POSITIONS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new()
 thread_local! {
     static TEST_LAST_MAX_SCROLL: Cell<usize> = const { Cell::new(0) };
     static TEST_LAST_CHAT_SCROLLBAR_VISIBLE: Cell<bool> = const { Cell::new(false) };
+    static TEST_LAST_SWARM_STRIP_BAND_HEIGHT: Cell<usize> = const { Cell::new(0) };
     static TEST_PINNED_PANE_TOTAL_LINES: Cell<usize> = const { Cell::new(0) };
     static TEST_LAST_DIFF_PANE_EFFECTIVE_SCROLL: Cell<usize> = const { Cell::new(0) };
     static TEST_LAST_DIFF_PANE_MAX_SCROLL: Cell<usize> = const { Cell::new(0) };
@@ -282,6 +287,57 @@ fn last_chat_scrollbar_visible() -> bool {
     {
         LAST_CHAT_SCROLLBAR_VISIBLE.load(Ordering::Relaxed) != 0
     }
+}
+
+fn set_last_swarm_strip_band_height(height: u16) {
+    #[cfg(test)]
+    {
+        TEST_LAST_SWARM_STRIP_BAND_HEIGHT.with(|state| state.set(height as usize));
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        LAST_SWARM_STRIP_BAND_HEIGHT.store(height as usize, Ordering::Relaxed);
+    }
+}
+
+fn last_swarm_strip_band_height() -> u16 {
+    #[cfg(test)]
+    {
+        return TEST_LAST_SWARM_STRIP_BAND_HEIGHT.with(Cell::get) as u16;
+    }
+    #[cfg(not(test))]
+    {
+        LAST_SWARM_STRIP_BAND_HEIGHT.load(Ordering::Relaxed) as u16
+    }
+}
+
+/// Rows reserved for the inline swarm strip above the status line.
+///
+/// The vertical strip renders one managed agent per row, so its natural height
+/// follows the live member list: every spawn, completion and prune resizes the
+/// bottom chrome and shoves the transcript, the status row and the composer up
+/// or down. That reads as the interface jumping around while agents work.
+/// Reserve the strip's full row budget instead of its current line count, and
+/// keep holding that band while a turn is in flight so a gap between agent
+/// waves cannot collapse it either; it releases once the turn ends.
+///
+/// A focused strip (the accordion the user opened) renders more rows than the
+/// unfocused budget, so the rendered height always wins.
+fn swarm_strip_band(visible: bool, rendered_rows: usize, processing: bool) -> u16 {
+    let reserved = if visible {
+        super::info_widget::swarm_gallery::swarm_strip_row_budget()
+    } else if processing {
+        // Mid-turn gap (one wave of agents finished, the next has not spawned
+        // yet): keep the band the previous frame reserved so the next spawn
+        // lands inside it instead of shoving the layout again.
+        last_swarm_strip_band_height()
+    } else {
+        0
+    };
+    let height = reserved.max(rendered_rows as u16);
+    set_last_swarm_strip_band_height(height);
+    height
 }
 
 /// Get the total line count from the pinned diff/content pane (set during render).
@@ -1507,6 +1563,7 @@ pub(crate) fn clear_test_render_state_for_tests() {
 #[cfg(test)]
 fn clear_test_render_state_locked() {
     set_last_max_scroll(0);
+    set_last_swarm_strip_band_height(0);
     set_pinned_pane_total_lines(0);
     set_last_diff_pane_effective_scroll(0);
     set_last_diff_pane_max_scroll(0);
@@ -2906,10 +2963,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // the bottom chrome and shoves the transcript up: reacting to raw
     // frame-by-frame dock visibility made the strip pop in and out and the
     // whole screen bounce (flicker).
-    let swarm_strip_lines: Vec<Line<'static>> = if !swarm_page_active
+    let swarm_strip_visible = !swarm_page_active
         && app.inline_swarm_gallery_active()
-        && (app.swarm_panel_focused() || !super::info_widget::swarm_strip_stands_down_for_dock())
-    {
+        && (app.swarm_panel_focused() || !super::info_widget::swarm_strip_stands_down_for_dock());
+    let swarm_strip_lines: Vec<Line<'static>> = if swarm_strip_visible {
         let members = app.inline_swarm_members();
         if chat_area.width >= 24 {
             let focus_key = crate::tui::keybind::swarm_panel_focus_key_label();
@@ -2936,7 +2993,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     } else {
         Vec::new()
     };
-    let swarm_strip_height = swarm_strip_lines.len() as u16;
+    let swarm_strip_height = swarm_strip_band(
+        swarm_strip_visible,
+        swarm_strip_lines.len(),
+        app.is_processing(),
+    );
 
     // Calculate pending messages (queued + interleave) for numbering and layout
     let pending_count = input_ui::pending_prompt_count(app);
@@ -3170,9 +3231,20 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     record_status_area(chunks[3]);
 
     // Draw the inline swarm strip directly above the status line if present.
+    // The band reserves the strip's full row budget, so the rendered rows are
+    // bottom-aligned inside it and keep hugging the status line while agent
+    // churn no longer changes the layout.
     if swarm_strip_height > 0 {
         clear_area(frame, chunks[2]);
-        frame.render_widget(Paragraph::new(swarm_strip_lines.clone()), chunks[2]);
+        let rendered = (swarm_strip_lines.len() as u16).min(chunks[2].height);
+        if rendered > 0 {
+            let strip_area = Rect {
+                y: chunks[2].y + chunks[2].height - rendered,
+                height: rendered,
+                ..chunks[2]
+            };
+            frame.render_widget(Paragraph::new(swarm_strip_lines.clone()), strip_area);
+        }
     }
 
     // Capture layout info for visual debug

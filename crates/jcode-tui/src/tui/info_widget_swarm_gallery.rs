@@ -570,6 +570,17 @@ pub(crate) fn render_swarm_strip_lines(
 /// `+N more` line (the cap includes that overflow row).
 const SWARM_STRIP_VERTICAL_MAX_ROWS: usize = 4;
 
+/// Rows the inline swarm strip can occupy for the configured
+/// `agents.swarm_strip_layout`. The bottom chrome reserves this as a stable
+/// band (see `ui::swarm_strip_band`) so member churn cannot resize the layout
+/// and shove the transcript, the status row and the composer around.
+pub(crate) fn swarm_strip_row_budget() -> u16 {
+    match crate::config::config().agents.swarm_strip_layout {
+        crate::config::SwarmStripLayout::Vertical => SWARM_STRIP_VERTICAL_MAX_ROWS as u16,
+        crate::config::SwarmStripLayout::Horizontal => 1,
+    }
+}
+
 /// Render the compact swarm widget body: at most two lines, an agents/nodes
 /// summary plus a green/yellow/empty plan progress bar. `plan` is the
 /// coordinator's task-graph progress as (done, running, total).

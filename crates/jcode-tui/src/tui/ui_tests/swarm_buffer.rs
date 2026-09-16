@@ -318,6 +318,92 @@ fn swarm_strip_full_draw_writes_chips_row_above_status_line() {
     );
 }
 
+/// The inline swarm strip lists one managed agent per row, so its natural
+/// height follows the live member list: every spawn and every finishing agent
+/// used to resize the bottom chrome and shove the transcript, the status row
+/// and the composer up or down. Reserve the strip's row budget as a stable
+/// band instead, held for the duration of a turn.
+#[test]
+fn swarm_strip_band_keeps_the_layout_still_while_agents_churn() {
+    let _lock = viewport_snapshot_test_lock();
+    clear_flicker_frame_history_for_tests();
+    crate::tui::info_widget::clear_widget_placements_for_tests();
+    crate::tui::ui::clear_test_render_state_for_tests();
+
+    let state = |members: Vec<SwarmMemberStatus>| TestState {
+        // A turn in flight: this is when agents churn and the band must hold.
+        status: ProcessingStatus::Streaming,
+        display_messages: vec![DisplayMessage::assistant("coordinator is working")],
+        messages_version: 1,
+        swarm_members: members,
+        ..Default::default()
+    };
+    let one_agent = vec![strip_member("s0", "one", "running")];
+    let four_agents: Vec<SwarmMemberStatus> = (0..4)
+        .map(|i| strip_member(&format!("s{i}"), "worker", "running"))
+        .collect();
+    let wave_done = vec![strip_member("s0", "one", "completed")];
+
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+
+    let mut rects = Vec::new();
+    for members in [
+        one_agent.clone(),
+        vec![
+            strip_member("s0", "one", "running"),
+            strip_member("s1", "two", "running"),
+        ],
+        four_agents,
+        wave_done,
+        // This wave finished and the next one has not spawned yet: the reserved
+        // band must survive the gap instead of collapsing and re-shoving.
+        Vec::new(),
+    ] {
+        terminal
+            .draw(|frame| crate::tui::ui::draw(frame, &state(members)))
+            .expect("full draw with inline swarm strip");
+        let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+        rects.push((
+            layout.messages_area,
+            layout.input_area.expect("input area"),
+            crate::tui::ui::last_status_area().expect("status area"),
+        ));
+    }
+
+    let first = rects[0];
+    for (frame, rect) in rects.iter().enumerate() {
+        assert_eq!(
+            *rect, first,
+            "agent churn must not move the transcript, the status row or the composer (frame {frame})"
+        );
+    }
+
+    terminal
+        .draw(|frame| crate::tui::ui::draw(frame, &state(one_agent)))
+        .expect("full draw with inline swarm strip");
+    let rows = buffer_rows(&terminal);
+    let status_area = crate::tui::ui::last_status_area().expect("status area recorded");
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+    let bee_rows: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.contains("🐝"))
+        .map(|(y, _)| y)
+        .collect();
+    assert_eq!(
+        bee_rows,
+        vec![status_area.y as usize - 1],
+        "a single agent must still render one strip row hugging the status row:\n{}",
+        rows.join("\n")
+    );
+    assert_eq!(
+        status_area.y,
+        layout.messages_area.bottom() + 4,
+        "the strip reserves its four-row budget between transcript and status line"
+    );
+}
+
 #[test]
 fn swarm_strip_full_draw_survives_narrow_width_sweep() {
     let _lock = viewport_snapshot_test_lock();
