@@ -404,6 +404,60 @@ fn swarm_strip_band_keeps_the_layout_still_while_agents_churn() {
     );
 }
 
+/// The band has to be *given back*. Holding it is only correct while a turn is in
+/// flight and agents are live: a finished turn with no members must collapse the
+/// reservation again, otherwise the bottom chrome stays permanently four rows
+/// taller than the transcript needs and the composer floats too high.
+#[test]
+fn swarm_strip_band_releases_once_the_turn_ends() {
+    let _lock = viewport_snapshot_test_lock();
+    clear_flicker_frame_history_for_tests();
+    crate::tui::info_widget::clear_widget_placements_for_tests();
+    crate::tui::ui::clear_test_render_state_for_tests();
+
+    let busy = TestState {
+        status: ProcessingStatus::Streaming,
+        display_messages: vec![DisplayMessage::assistant("coordinator is working")],
+        messages_version: 1,
+        swarm_members: vec![strip_member("s0", "one", "running")],
+        ..Default::default()
+    };
+    let done = TestState {
+        status: ProcessingStatus::Idle,
+        display_messages: vec![DisplayMessage::assistant("coordinator is done")],
+        messages_version: 1,
+        swarm_members: Vec::new(),
+        ..Default::default()
+    };
+
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+
+    // Measured as the gap between the transcript bottom and the status row: that
+    // is exactly the rows the band holds. Messages height is not usable here,
+    // because the idle donut reserves rows of its own once the turn ends.
+    let mark = |state: &TestState, terminal: &mut Terminal<TestBackend>| {
+        terminal
+            .draw(|frame| crate::tui::ui::draw(frame, state))
+            .expect("full draw");
+        let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+        let status = crate::tui::ui::last_status_area().expect("status area");
+        status.y - layout.messages_area.bottom()
+    };
+
+    let busy_gap = mark(&busy, &mut terminal);
+    let done_gap = mark(&done, &mut terminal);
+
+    assert_eq!(
+        busy_gap, 4,
+        "a live agent mid-turn must reserve the strip's four-row budget"
+    );
+    assert_eq!(
+        done_gap, 0,
+        "the reserved band must be returned once the turn ends (busy gap was {busy_gap})"
+    );
+}
+
 #[test]
 fn swarm_strip_full_draw_survives_narrow_width_sweep() {
     let _lock = viewport_snapshot_test_lock();
