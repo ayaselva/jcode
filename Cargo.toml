@@ -280,9 +280,15 @@ incremental = true
 inherits = "release"
 opt-level = 0
 
-# Full LTO release for stable/distribution builds
+# Full LTO release for stable/distribution builds.
+#
+# `opt-level = 3` is explicit because this profile inherits `release`, which is
+# deliberately built for iteration speed (opt-level 1, 256 codegen units,
+# incremental). Without the override the shipped binary - the one users run as
+# their TUI client and server - was compiled for compile time, not for runtime.
 [profile.release-lto]
 inherits = "release"
+opt-level = 3
 lto = "thin"
 codegen-units = 16
 incremental = false
