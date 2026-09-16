@@ -552,10 +552,21 @@ fn parse_exa_results(response: ExaResponse, max_results: usize) -> Vec<SearchRes
             SearchResult {
                 title,
                 url: result.url,
-                snippet,
+                snippet: truncate_snippet(&snippet),
             }
         })
         .collect()
+}
+
+/// Exa highlights are whole excerpts and can run to several kilobytes each
+/// (a documentation page easily yields 4 KB per highlight). Tool output lands
+/// in the model's context, so keep snippets comparable to the HTML engines'.
+fn truncate_snippet(snippet: &str) -> String {
+    const MAX_SNIPPET_CHARS: usize = 1200;
+    match snippet.char_indices().nth(MAX_SNIPPET_CHARS) {
+        Some((index, _)) => format!("{}…", &snippet[..index]),
+        None => snippet.to_string(),
+    }
 }
 
 /// Map a parsed SearXNG JSON response to `SearchResult`s, dropping entries with
@@ -1091,6 +1102,31 @@ mod tests {
         let search = parse_exa_http_response(200, &body, 3).unwrap();
         assert_eq!(search.results.len(), 3);
         assert_eq!(search.request_id, None);
+    }
+
+    #[test]
+    fn exa_highlights_are_capped_to_a_snippet() {
+        // Real Exa highlights are whole excerpts: a docs page returned ~4 KB.
+        let long = "x".repeat(5000);
+        let body = json!({
+            "results": [{ "title": "t", "url": "https://x/1", "highlights": [long] }]
+        })
+        .to_string();
+        let search = parse_exa_http_response(200, &body, 5).unwrap();
+        let snippet = &search.results[0].snippet;
+        assert_eq!(
+            snippet.chars().count(),
+            1201,
+            "1200 chars plus the ellipsis"
+        );
+        assert!(snippet.ends_with('…'));
+        // Multi-byte characters must not be split.
+        let body = json!({
+            "results": [{ "url": "https://x/2", "highlights": ["é".repeat(2000)] }]
+        })
+        .to_string();
+        let search = parse_exa_http_response(200, &body, 5).unwrap();
+        assert!(search.results[0].snippet.ends_with('…'));
     }
 
     #[test]
