@@ -147,6 +147,12 @@ impl App {
             // last paused frame, and resume animation timing from "now".
             self.request_full_redraw();
             self.note_client_focus(true);
+            // A newly focused pane is the one that owns its zellij tab name, so
+            // re-publish the summary: the tab bar then follows the pane the user
+            // is actually looking at instead of the last one that updated.
+            if !self.suppress_terminal_title_updates {
+                crate::tui::zellij_tab::sync_tab_name(&self.session_summary_title());
+            }
             true
         } else {
             false

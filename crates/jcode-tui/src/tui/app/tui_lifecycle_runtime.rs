@@ -71,9 +71,49 @@ impl App {
         let session_name = crate::id::extract_session_name(session_id)
             .map(|s| s.to_string())
             .unwrap_or_else(|| session_id.to_string());
+        let is_canary = if self.is_remote {
+            self.remote_is_canary.unwrap_or(self.session.is_canary)
+        } else {
+            self.session.is_canary
+        };
+        let server_name = self.remote_server_short_name.as_deref().unwrap_or("jcode");
+        if server_name.eq_ignore_ascii_case("jcode") {
+            crate::process_title::set_client_display_title(&session_name, is_canary);
+        } else {
+            crate::process_title::set_client_remote_display_title(
+                server_name,
+                &session_name,
+                is_canary,
+            );
+        }
+        let window_title = self.session_summary_title();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::SetTitle(window_title.clone())
+        );
+        // Zellij does not derive a tab name from the pane title, so a tab hosting
+        // jcode would keep showing `Tab #1`. Push the same summary to the tab.
+        crate::tui::zellij_tab::sync_tab_name(&window_title);
+    }
+
+    /// The single-line summary of what this session is working on: an explicit
+    /// rename wins, then the model's current todo/goal title, then the generated
+    /// title, behind the connection icon.
+    ///
+    /// Shared by the OSC 2 window title and the zellij tab name so the tab bar
+    /// always explains the same thing as the pane title.
+    pub(super) fn session_summary_title(&self) -> String {
+        let session_id = if self.is_remote {
+            self.remote_session_id
+                .as_deref()
+                .unwrap_or(&self.session.id)
+        } else {
+            &self.session.id
+        };
+        let session_name = crate::id::extract_session_name(session_id)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| session_id.to_string());
         let session_icon = crate::id::session_icon(&session_name);
-        // Keep the live terminal title aligned with /resume: an explicit rename
-        // wins, then the model's current todo/goal title, then the generated title.
         let todo_title = self
             .session
             .custom_title
@@ -99,25 +139,12 @@ impl App {
         } else {
             format!("jcode/{} {session_label}", server_name.to_lowercase())
         };
-        if server_name.eq_ignore_ascii_case("jcode") {
-            crate::process_title::set_client_display_title(&session_name, is_canary);
-        } else {
-            crate::process_title::set_client_remote_display_title(
-                server_name,
-                &session_name,
-                is_canary,
-            );
-        }
-        let window_title = crate::process_title::terminal_window_title(
+        crate::process_title::terminal_window_title(
             icon,
             display_title,
             Some(&fallback_label),
             is_canary,
-        );
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::terminal::SetTitle(window_title)
-        );
+        )
     }
 
     pub(super) fn reconnect_target_session_id(&self) -> Option<String> {
