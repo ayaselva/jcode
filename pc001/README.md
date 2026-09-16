@@ -40,6 +40,7 @@ pc001/install.sh --skip-guardrails   # zonder fmt/clippy/ratchets
 
 # upstream ophalen, branch rebasen, daarna install.sh
 pc001/upgrade.sh
+pc001/upgrade.sh --skip-guardrails   # als check_guardrails.sh al rood staat buiten deze branch
 
 # bewijs met echte zoekopdrachten dat de geïnstalleerde jcode Exa gebruikt
 pc001/verify.sh
