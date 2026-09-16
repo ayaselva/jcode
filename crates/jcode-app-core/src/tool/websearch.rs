@@ -438,7 +438,11 @@ impl WebSearchTool {
             .await?;
 
         let status = response.status().as_u16();
-        let body = response.text().await.unwrap_or_default();
+        let body = response.text().await.map_err(|err| {
+            anyhow::anyhow!(
+                "Exa search failed with status {status}: could not read the response body ({err})"
+            )
+        })?;
         parse_exa_http_response(status, &body, num_results)
     }
 }
