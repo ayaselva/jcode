@@ -399,6 +399,29 @@ fn test_remote_empty_ctrl_enter_steers_newest_queued_message() {
 }
 
 #[test]
+fn test_remote_empty_ctrl_shift_enter_steers_oldest_queued_message() {
+    let _env_lock = crate::storage::lock_test_env();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.queued_messages.push("oldest".to_string());
+    app.queued_messages.push("newest".to_string());
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        &mut remote,
+    ))
+    .unwrap();
+
+    assert_eq!(app.queued_messages().len(), 1);
+    assert_eq!(app.queued_messages()[0], "newest");
+    assert_eq!(app.pending_soft_interrupts, vec!["oldest"]);
+}
+
+#[test]
 fn test_remote_empty_enter_keeps_queue_when_idle() {
     // An idle session dispatches its queue when the turn ends, so Enter must not
     // steal a message out of it before that happens.
@@ -467,6 +490,54 @@ fn test_local_empty_ctrl_enter_steers_newest_queued_message() {
     assert_eq!(app.interleave_message.as_deref(), Some("newest"));
     assert_eq!(app.queued_messages().len(), 1);
     assert_eq!(app.queued_messages()[0], "first");
+}
+
+#[test]
+fn test_local_empty_ctrl_shift_enter_steers_oldest_queued_message() {
+    let _env_lock = crate::storage::lock_test_env();
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.queued_messages.push("oldest".to_string());
+    app.queued_messages.push("newest".to_string());
+
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        .unwrap();
+
+    assert_eq!(app.interleave_message.as_deref(), Some("oldest"));
+    assert_eq!(app.queued_messages().len(), 1);
+    assert_eq!(app.queued_messages()[0], "newest");
+}
+
+#[test]
+fn test_local_ctrl_shift_enter_with_a_draft_keeps_send_now_meaning() {
+    // Nothing to pull from the queue when the composer holds a draft, so the
+    // chord falls back to the plain Ctrl+Enter action.
+    let _env_lock = crate::storage::lock_test_env();
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.set_input_for_test("draft");
+    app.queued_messages.push("queued".to_string());
+
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        .unwrap();
+
+    assert_eq!(app.interleave_message.as_deref(), None);
+    assert_eq!(app.queued_messages().len(), 2);
+    assert_eq!(app.queued_messages()[0], "queued");
+    assert_eq!(app.queued_messages()[1], "draft");
+}
+
+#[test]
+fn test_local_empty_ctrl_shift_enter_keeps_queue_when_idle() {
+    let _env_lock = crate::storage::lock_test_env();
+    let mut app = create_test_app();
+    app.queued_messages.push("queued".to_string());
+
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        .unwrap();
+
+    assert_eq!(app.queued_messages().len(), 1);
+    assert!(app.interleave_message.is_none());
 }
 
 #[test]

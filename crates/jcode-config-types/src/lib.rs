@@ -937,6 +937,8 @@ pub struct KeybindingsConfig {
     /// Swap composer submit keys: plain Enter inserts a newline and
     /// Ctrl+Enter (or Cmd+Enter) submits (default: false). Shift+Enter,
     /// Alt+Enter, and the trailing-backslash fallback keep inserting newlines.
+    /// Ctrl+Shift+Enter (Cmd+Shift+Enter) keeps the Ctrl+Enter meaning but
+    /// steers the oldest queued message instead of the newest.
     pub enter_inserts_newline: bool,
 }
 

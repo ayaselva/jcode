@@ -382,6 +382,16 @@ pub(super) fn build_registry(inputs: &RegistryInputs<'_>) -> Vec<KnownHotkey> {
         "alternate_enter",
         "send now, bypassing queue mode",
     ));
+    out.push(KnownHotkey::new(
+        key(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        "alternate_enter_oldest",
+        "send the oldest queued message now",
+    ));
+    out.push(KnownHotkey::new(
+        key(KeyCode::Enter, KeyModifiers::SUPER | KeyModifiers::SHIFT),
+        "alternate_enter_oldest",
+        "send the oldest queued message now",
+    ));
     out.push(KnownHotkey::quiet(
         key(KeyCode::Enter, KeyModifiers::SHIFT),
         "newline",

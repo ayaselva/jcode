@@ -1761,6 +1761,25 @@ pub(super) fn handle_alternate_enter(app: &mut App) {
     }
 }
 
+pub(super) fn handle_shift_alternate_enter(app: &mut App) {
+    if app.activate_picker_from_preview() {
+        return;
+    }
+
+    if app.input.is_empty() {
+        // Same "send now" chord as Ctrl+Enter, but pulling the other end of the
+        // queue: the message that has been waiting longest.
+        if let Some(message) = take_first_queued_message_for_steer(app) {
+            stage_local_interleave(app, message, Vec::new());
+        }
+        return;
+    }
+
+    // With a draft in the composer there is nothing to pick from the queue, so
+    // the chord keeps its plain Ctrl+Enter meaning instead of going dead.
+    handle_alternate_enter(app);
+}
+
 pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
     match code {
         KeyCode::Char('u') => {
@@ -2692,6 +2711,30 @@ pub(super) fn take_last_queued_message_for_steer(app: &mut App) -> Option<String
     app.queued_messages.pop()
 }
 
+/// Take the oldest queued message so the caller can steer it into the running
+/// turn right away.
+///
+/// Ctrl+Shift+Enter mirrors [`take_last_queued_message_for_steer`]: instead of
+/// pulling the message that was queued last, it pulls the one that has been
+/// waiting longest, so a queue built up over a long turn can be led with the
+/// message that came first. The message leaves the queue for the same reason:
+/// it becomes a pending steer, and staying queued would send it twice. Returns
+/// `None` under the same conditions as the newest-first variant, plus when the
+/// front of the queue is blank.
+pub(super) fn take_first_queued_message_for_steer(app: &mut App) -> Option<String> {
+    if !app.is_processing || app.interleave_message.is_some() {
+        return None;
+    }
+    if app
+        .queued_messages
+        .first()
+        .is_none_or(|message| message.trim().is_empty())
+    {
+        return None;
+    }
+    Some(app.queued_messages.remove(0))
+}
+
 fn attach_image(app: &mut App, media_type: String, base64_data: String) {
     let size_kb = base64_data.len() / 1024;
     app.pending_images.push((media_type.clone(), base64_data));
@@ -2881,11 +2924,15 @@ impl App {
 
         // Ctrl+Enter / Cmd+Enter: does opposite of queue_mode during processing.
         // With keybindings.enter_inserts_newline the roles swap: Ctrl+Enter is
-        // the regular submit and plain Enter inserts a newline.
+        // the regular submit and plain Enter inserts a newline. Adding Shift
+        // keeps the send-now meaning but takes the oldest queued message instead
+        // of the newest.
         if code == KeyCode::Enter
             && modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
         {
-            if crate::config::config().keybindings.enter_inserts_newline {
+            if modifiers.contains(KeyModifiers::SHIFT) {
+                handle_shift_alternate_enter(self);
+            } else if crate::config::config().keybindings.enter_inserts_newline {
                 handle_enter(self);
             } else {
                 handle_alternate_enter(self);

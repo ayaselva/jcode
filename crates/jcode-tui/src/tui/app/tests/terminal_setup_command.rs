@@ -139,6 +139,27 @@ fn shift_enter_csi_u_sequence_decodes_to_enter_plus_shift() {
 
 #[test]
 #[cfg(unix)]
+fn ctrl_shift_enter_csi_u_sequence_decodes_to_enter_plus_control_and_shift() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    // Kitty CSI-u: 13 = Enter, 6 = Ctrl(4) + Shift(2). This is the chord that
+    // steers the oldest queued message, so both modifier bits must survive
+    // decoding or it is indistinguishable from plain Ctrl+Enter.
+    let Some((code, bits)) = decode_key_event_via_pty(b"\x1b[13;6u") else {
+        eprintln!("skipping: pty decode unavailable in this environment");
+        return;
+    };
+
+    assert_eq!(code, KeyCode::Enter);
+    let modifiers = KeyModifiers::from_bits_truncate(bits);
+    assert!(
+        modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::SHIFT),
+        "Ctrl+Shift+Enter must decode with CONTROL and SHIFT, got {modifiers:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
 fn bare_carriage_return_decodes_without_shift() {
     use crossterm::event::{KeyCode, KeyModifiers};
 

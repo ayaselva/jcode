@@ -801,9 +801,15 @@ async fn handle_remote_key_internal(
                         .await;
                 }
             }
-        } else if let Some(message) = input::take_last_queued_message_for_steer(app) {
+        } else if let Some(message) = if modifiers.contains(KeyModifiers::SHIFT) {
+            // Ctrl+Shift+Enter mirrors Ctrl+Enter from the other end of the
+            // queue: the message that has been waiting longest goes first.
+            input::take_first_queued_message_for_steer(app)
+        } else {
             // Ctrl+Enter is the "send now" chord, so with nothing typed it
             // steers the message that is already waiting in the queue.
+            input::take_last_queued_message_for_steer(app)
+        } {
             app.send_interleave_now(message, Vec::new(), remote).await;
         }
         return Ok(());
