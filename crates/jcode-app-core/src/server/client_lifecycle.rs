@@ -1523,8 +1523,24 @@ pub(super) async fn handle_client(
                         &swarm_event_tx,
                     )
                     .await;
-                    if let Some(snapshot) = try_available_models_snapshot(&agent) {
-                        last_available_models_snapshot = Some(snapshot);
+                    // The History payload carries model names without routes, so
+                    // without this push a client that never observes a later
+                    // catalog change keeps synthesizing placeholder picker
+                    // routes (`remote-catalog`, "refreshing route details…").
+                    // Push the current picker-scoped catalog once on subscribe
+                    // and record the dedup key, so a later ModelsUpdated with no
+                    // material change stays quiet.
+                    if let Some(event) = try_available_models_updated_event(&agent) {
+                        last_available_models_snapshot = Some(available_models_dedup_key(&event));
+                        let encoded_len = crate::protocol::encode_event(&event).len();
+                        if encoded_len <= MAX_LIVE_AVAILABLE_MODELS_UPDATE_BYTES {
+                            let _ = client_event_tx.send(event);
+                        } else if let Some(slim) = names_only_available_models_event(&event)
+                            && crate::protocol::encode_event(&slim).len()
+                                <= MAX_LIVE_AVAILABLE_MODELS_UPDATE_BYTES
+                        {
+                            let _ = client_event_tx.send(slim);
+                        }
                     }
                 }
                 client_subscribed = true;

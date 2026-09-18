@@ -23,6 +23,7 @@ in de jcode-broncode zelf:
 | filter `filter_model_routes_by_model_allowlist` | `crates/jcode-provider-core/src/lib.rs` |
 | filter `filter_model_routes_by_provider_allowlist` | `crates/jcode-provider-core/src/lib.rs` |
 | scopet de gepubliceerde catalogus op de pickerlijsten | `crates/jcode-app-core/src/agent/provider.rs` |
+| stuurt die catalogus meteen bij het subscriben | `crates/jcode-app-core/src/server/client_lifecycle.rs` |
 | toepassing in de picker | `crates/jcode-tui/src/tui/app/inline_interactive.rs` |
 | toepassing in `jcode model list` | `src/cli/commands.rs` |
 | documentatie in nieuwe configs | `crates/jcode-base/src/config/default_file.rs` |

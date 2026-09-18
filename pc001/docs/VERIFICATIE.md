@@ -238,6 +238,13 @@ hele modelnaam, nooit een provider/model-paar: namen als `openai/gpt-oss-120b`
 zijn zelf modelnamen, en de providerkant wordt door `model_picker_providers`
 bepaald.
 
+Een verse client kreeg de routes niet altijd: de History-payload stuurt alleen
+namen, en de server pushte de catalogus alleen bij een *wijziging* op de bus.
+Zonder wijziging bleef `remote_model_options` leeg en bouwde de picker alsnog
+placeholder-rijen. De server stuurt de (gescopete) catalogus nu ook direct bij
+het subscriben; meteen na verbinden staat `model_options_count` op 26 zonder dat
+er iets wijzigt, en de eerste `/model` toont dus altijd echte routes.
+
 ## Fase 6 — de sleutels van alle providers
 
 Elk model uit de lijst is met zijn eigen sleutelpad nagelopen (2026-09-18). De
