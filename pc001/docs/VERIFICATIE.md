@@ -196,32 +196,46 @@ JCODE_RUNTIME_DIR=/tmp/jcode-picker-check ~/.local/bin/jcode --no-update \
 jcode debug -s /tmp/jcode-picker-check/jcode.sock client:model-picker 2000
 ```
 
+Meting op de geïnstalleerde build `a8ee05448` (2026-09-18):
+
 ```
 open True filtered_count 141 rows 141
-unieke modellen: 24
-ontbreekt: []
-extra (0): []
+unieke modelnamen: 24
+placeholder-rijen (api_method remote-catalog): 0
+providers: Cerebras, OpenAI, OpenRouter, auto, cheaperinference, databricks,
+           huggingface-cerebras, modal-rent-b200, openrouter-curated
 api_methods: ['openai-compatible:cerebras', 'openai-compatible:cheaperinference',
  'openai-compatible:databricks', 'openai-compatible:huggingface-cerebras',
  'openai-compatible:modal-rent-b200', 'openai-compatible:openrouter',
  'openai-compatible:openrouter-curated', 'openai-oauth', 'openrouter']
+via jcode model list --json: 24 modellen / 26 routes (het actieve model houdt zijn
+  drie routes); één providerroute per model, bijv.
+  gpt-oss-120b -> Cerebras, Qwen/Qwen3.8-27B:cerebras -> huggingface-cerebras,
+  gpt-5.6-sol -> OpenAI (oauth), Rent-Model ... -> modal-rent-b200
 ```
 
 De 141 rijen zijn de 24 modellen maal hun denkniveaus (`… (high)`, `… (med)`, …);
-de unieke modelnamen zijn er precies 24. Zodra de catalogus volledig gehydrateerd
-is, draagt elke rij zijn echte profiel (`openai-compatible:…`, `openai-oauth`).
+de unieke modelnamen zijn er precies 24. Elk model heeft precies één
+providerroute. `auto` en `OpenRouter` staan er alleen bij het actieve model
+(`deepseek/deepseek-v4.1-flash`), omdat routes van het actieve model altijd
+zichtbaar blijven.
 
-In de tussenstand van de client staan dezelfde rijen nog als
-`api_method: "remote-catalog"` met het profiel van het actieve model als
-providerlabel. Een allowlist-regel is daarom een hele modelnaam, nooit een
-provider/model-paar: namen als `openai/gpt-oss-120b` zijn zelf modelnamen, en een
-providerprefix zou in die tussenstand geen onderscheid maken. Met provider-scoped
-regels (de eerste opzet) zakte de picker naar de 15 openrouter-modellen, en nadat
-de sleutelherordening meer providers actief maakte kwamen er juist twee vreemde
-modellen bij (`gpt-5.6-luna`, `deepseek-v4-flash`) doordat zo'n regel na
-normalisatie ook de native route van die provider raakte. Ter controle: met een
-lege `model_picker_models` toonde dezelfde picker 423 modellen, en met de
-namenlijst exact de 24 hierboven.
+Zonder de catalogus-scope zag hetzelfde scherm er zo uit: dezelfde 24 namen, maar
+elke rij met `api_method: "remote-catalog"`, het profiel van het actieve model als
+providerlabel en de detailtekst `refreshing route details…`, die ook na minuten
+niet bijwerkte. De server publiceerde namelijk de routes van alle providers
+(423 namen, 52 routes, 102 KB) en degradeerde dat frame naar namen-only
+(`Downgrading oversized bus AvailableModelsUpdated frame … 102178 -> 11174 bytes`);
+met meer dan 64 namen koos de client daarna de lichte route en bouwde hij
+placeholder-rijen in plaats van echte routes. Met de scope blijft het frame onder
+de live-updategrens (er verschijnt geen `Downgrading oversized`-regel meer in het
+journaal) en komt elke rij volledig gehydrateerd binnen.
+
+Ter controle: met een lege `model_picker_models` toonde dezelfde picker 423
+modellen; met de namenlijst exact de 24 hierboven. Een allowlist-regel is een
+hele modelnaam, nooit een provider/model-paar: namen als `openai/gpt-oss-120b`
+zijn zelf modelnamen, en de providerkant wordt door `model_picker_providers`
+bepaald.
 
 ## Fase 6 — de sleutels van alle providers
 
@@ -247,56 +261,49 @@ toont exact de modellen van omp en elk model heeft een werkend sleutelpad
 
 ## Code-verificatie
 
+De wijziging staat sinds 2026-09-18 in de primaire checkout
+`/data/projects/jcode` (de worktree `pc001-model-picker` is daarin gemerged);
+alle commando's hieronder draaien daar zonder eigen `CARGO_TARGET_DIR`.
+
 ```bash
-# unit-tests van de tool (inclusief de Exa-tests, zonder netwerk)
-CARGO_TARGET_DIR=/data/worktrees/jcode/model-picker/target scripts/dev_cargo.sh test --profile selfdev \
-  -p jcode-app-core --lib tool::websearch
-#   -> test result: ok. 21 passed; 0 failed
+# formattering van de hele boom
+cargo fmt --all --check
+#   -> geen diff
 
-# config-tests (sjabloon, env-overrides, allowlist)
-CARGO_TARGET_DIR=/data/worktrees/jcode/model-picker/target scripts/dev_cargo.sh test --profile selfdev \
-  -p jcode-base --lib config::
-#   -> test result: ok. 77 passed; 0 failed
-
-# tests van de model-allowlist zelf
-CARGO_TARGET_DIR=/data/worktrees/jcode/model-picker/target scripts/dev_cargo.sh test --profile selfdev \
-  -p jcode-provider-core model_allowlist
+# model-allowlist in provider-core
+scripts/dev_cargo.sh test --profile selfdev -p jcode-provider-core allowlist
 #   -> test result: ok. 2 passed; 0 failed
 
 # picker-tests van de TUI: dezelfde 8 falen ook op de onaangeraakte basis
-# (bestaande pc001-sorteerpatch in de picker), mijn filter voegt er geen toe
-CARGO_TARGET_DIR=/data/worktrees/jcode/model-picker/target scripts/dev_cargo.sh test --profile selfdev \
-  -p jcode-tui model_picker
-#   -> test result: FAILED. 55 passed; 8 failed   == identiek op /data/worktrees/jcode/base-check (development)
+# (bestaande pc001-sorteerpatch in de picker), de verplaatste providerfilter
+# voegt er geen toe
+scripts/dev_cargo.sh test --profile selfdev -p jcode-tui model_picker
+#   -> test result: FAILED. 55 passed; 8 failed   == dezelfde 8 als de basis
 
-# clippy op de crates van deze wijziging
-CARGO_TARGET_DIR=/data/worktrees/jcode/model-picker/target scripts/dev_cargo.sh clippy --profile selfdev \
-  -p jcode-provider-core -p jcode-config-types -- -D warnings
-#   -> Finished, geen waarschuwingen
+# clippy op de crates van deze wijziging; de vier allows zijn bestaande
+# vondsten buiten deze wijziging (zie hieronder) en blokkeren anders de hele run
+scripts/dev_cargo.sh clippy --profile selfdev -p jcode-provider-core -p jcode-base \
+  -p jcode-app-core -p jcode-tui -- -D warnings \
+  -A clippy::collapsible_match -A clippy::single_match \
+  -A clippy::collapsible_if -A clippy::unnecessary_lazy_evaluations
+#   -> Finished, geen vondst in de gewijzigde code
 
-# formattering van de geraakte bestanden
-rustfmt --edition 2024 --check crates/jcode-provider-core/src/lib.rs \
-  crates/jcode-config-types/src/lib.rs crates/jcode-base/src/provider/mod.rs \
-  crates/jcode-base/src/config/default_file.rs \
-  crates/jcode-tui/src/tui/app/inline_interactive.rs src/cli/commands.rs
-#   -> geen diff
+# catalogus-scope in de praktijk: geen naam-only degradatie meer
+grep -a "Downgrading oversized" ~/.jcode/logs/jcode-2026-09-18.log
+#   -> alleen de twee regels van vóór deze wijziging (02:14 en 02:24)
 ```
 
-`scripts/check_guardrails.sh` is rood op deze checkout, maar uitsluitend op
-gates die al rood waren vóór deze branch: `cargo fmt --all --check` struikelt
-over `crates/jcode-base/src/prompt_tests.rs` en
-`crates/jcode-tui/src/tui/ui_inline_interactive.rs` (beide onaangeraakt), en
-clippy 1.95 meldt `collapsible_match`/`single_match` in
-`crates/jcode-base/src/provider/catalog_routes.rs:1174`,
-`crates/jcode-base/src/usage/accessors.rs:168`,
-`crates/jcode-provider-bedrock/src/lib.rs:1283` en
-`crates/jcode-render-core/src/markdown.rs:423`. Dezelfde run in de onaangeraakte
-checkout `/data/projects/jcode` geeft exact dezelfde vondsten, op geen enkele
-regel uit deze branch.
-
-Bij de run van 2026-09-18 kwamen daar twee clippy-vondsten bij, ook buiten deze
-branch: `collapsible_match` in `crates/jcode-tui-account-picker/src/overlay.rs:352`
-en in `crates/jcode-render-core/src/markdown.rs`. Daarom is hier met
-`--skip-guardrails` gebouwd, volgens de escape hatch die dit bestand al
-beschreef; fmt, clippy op de gewijzigde crates en de gerichte tests zijn los
-gedraaid (zie hierboven).
+`scripts/check_guardrails.sh --skip-slow` is groen op `cargo fmt --all --check`,
+`Cargo.lock`, de warningbudget-, dependency-boundary-, wildcard-reexport- en
+desktop2-framebudget-gate, en rood op vier ratchets die al ver boven hun
+baseline staan door eerder werk op deze lijn (bestanden die deze wijziging niet
+aanraakt: `crates/jcode-tui/src/tui/app/input.rs` 3881 -> 4003 LOC,
+`crates/jcode-tui/src/tui/ui.rs`, `crates/jcode-desktop2/src/tests/visual.rs`).
+Daarom is hier met `--skip-guardrails` gebouwd, volgens de escape hatch die dit
+bestand al beschreef. De volledige run struikelt daarnaast op bestaande
+clippy-vondsten buiten deze wijziging:
+`clippy::collapsible_match` in `crates/jcode-render-core/src/markdown.rs:423`,
+`clippy::collapsible_if` in `crates/jcode-base/src/usage/accessors.rs:168`,
+`clippy::unnecessary_lazy_evaluations` in
+`crates/jcode-app-core/src/tool/browser.rs:94`, plus vondsten in
+`crates/jcode-tui-usage-overlay` en `crates/jcode-tui-account-picker`.

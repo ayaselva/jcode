@@ -1047,11 +1047,10 @@ pub fn filter_model_routes_by_provider_allowlist(
         let api_method = normalize_model_route_provider_label(&route.api_method);
         // "openai-compatible:myprofile" normalizes to "openaicompatible:myprofile";
         // also expose the bare profile id for convenience.
-        let profile_id = route
-            .api_method
-            .split_once(':')
-            .map(|(_, profile)| normalize_model_route_provider_label(profile))
-            .unwrap_or_default();
+        let profile_id = match route.api_method.split_once(':') {
+            Some((_, profile)) => normalize_model_route_provider_label(profile),
+            None => String::new(),
+        };
         allowed.iter().any(|entry| {
             *entry == provider
                 || *entry == api_method

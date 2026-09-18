@@ -3289,8 +3289,8 @@ pub async fn run_model_command(
         .is_some_and(|entries| entries.iter().any(|entry| !entry.trim().is_empty()));
     // Apply the same picker scope the catalog and the TUI use, so
     // `jcode model list` shows exactly the models `/model` offers. Both filters
-    // fall back to the unfiltered routes, so an explicit `-p <provider>` whose
-    // models are outside the scope still lists that provider's catalog.
+    // fall back to the unfiltered routes when nothing matches, so the scope can
+    // never empty an explicit `-p <provider>` listing entirely.
     let provider_allowlist = crate::config::config()
         .provider
         .model_picker_providers

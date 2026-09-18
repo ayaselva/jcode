@@ -21,6 +21,8 @@ in de jcode-broncode zelf:
 | `WebSearchEngine::Exa` + `WebSearchConfig.exa_api_key(_env)` | `crates/jcode-config-types/src/lib.rs` |
 | allowlist `ProviderConfig.model_picker_models` | `crates/jcode-config-types/src/lib.rs` |
 | filter `filter_model_routes_by_model_allowlist` | `crates/jcode-provider-core/src/lib.rs` |
+| filter `filter_model_routes_by_provider_allowlist` | `crates/jcode-provider-core/src/lib.rs` |
+| scopet de gepubliceerde catalogus op de pickerlijsten | `crates/jcode-app-core/src/agent/provider.rs` |
 | toepassing in de picker | `crates/jcode-tui/src/tui/app/inline_interactive.rs` |
 | toepassing in `jcode model list` | `src/cli/commands.rs` |
 | documentatie in nieuwe configs | `crates/jcode-base/src/config/default_file.rs` |
@@ -41,13 +43,23 @@ in de jcode-broncode zelf:
   routes, zodat de picker nooit leeg wordt.
 * `pc001/model-picker-models.txt` is de bron van waarheid voor die lijst: de 24
   modellen van omp (`enabledModels`), als modelnaam. Provider-scoped regels
-  bestaan bewust niet: de normale TUI praat met een remote server en die remote
-  catalogus labelt elke route met het profiel van het actieve model
-  (`remote-catalog`), en namen als `openai/gpt-oss-120b` zijn zelf modelnamen in
-  plaats van provider/model-paren. `pc001/model-picker-providers.txt` zet
-  `[provider] model_picker_providers` op precies de providers van die modellen,
-  zodat de providerfilter in een lokale picker geen routes wegneemt die er juist
-  wel in horen.
+  bestaan bewust niet: namen als `openai/gpt-oss-120b` zijn zelf modelnamen in
+  plaats van provider/model-paren, en de providerkeuze hoort in
+  `model_picker_providers`.
+* `pc001/model-picker-providers.txt` zet `[provider] model_picker_providers` op
+  precies de providers van die modellen. Die lijst is nu ook de providerkant van
+  de begrenzing: de server publiceert alleen de routes van deze providers, zodat
+  dezelfde modelnaam niet via Comtegra, Baseten of de ingebouwde OpenRouter-slot
+  in de picker opduikt.
+* De server scope't de gepubliceerde catalogus (`AvailableModelsUpdated` én de
+  modelnamen in de eerste History-payload) op beide pickerlijsten. Zonder die
+  stap stuurde hij alle providers (423 namen, 52 routes, ~102 KB), ruim over de
+  live-updategrens van 64 KiB; de server degradeerde dat frame dan naar
+  namen-only en de client bouwde placeholder-routes met het profiel van het
+  actieve model als providerlabel en de tekst `refreshing route details…`, die
+  nooit meer bijwerkte. Met de scope blijft het frame klein en krijgt elke rij
+  zijn echte provider (`openai-compatible:huggingface-cerebras`, `openai-oauth`,
+  …).
 * De modellen komen per provider uit een profiel in `pc001/providers/*.toml`:
   `openrouter-curated` (15 modellen), `cheaperinference` (1),
   `huggingface-cerebras` (2), `modal-rent-b200` (1) en `databricks` (1). Elk
@@ -75,6 +87,12 @@ sleutels in het procesmilieu:
 | `HUGGINGFACE_CEREBRAS_API_KEY` | `huggingface-cerebras-api-key` — Doppler-secret `HF_TOKEN`, Hugging Face-router, vormcontrole `hf_*` |
 | `MODAL_RENT_API_KEY` | `modal-rent-api-key` — gehuurde Modal-B200-server (`rent-server`) |
 | `DATABRICKS_TRIAL_TOKEN` | `databricks-api-key` — Doppler-secret `DATABRICKS_TRIAL_TOKEN`, Databricks Foundation Model APIs, vormcontrole `dapi*` |
+| `JCODE_PROVIDER_OPENROUTER_CURATED_API_KEY` | `pi-openrouter-main-vibe-key` — Doppler-secret `OPENROUTER_API_KEY_MAIN_VIBE`; exact dezelfde sleutel die omp in zijn credentialstore heeft |
+| `CHEAPERINFERENCE_API_KEY` | `cheaperinference-api-key` — het privé-providerbestand `~/.config/jcode/cheaperinference.env` is de opslag; de helper print de waarde |
+
+De twee laatste profielen (`openrouter-curated`, `cheaperinference`) hebben ook
+een `env_file` in `~/.config/jcode/`; de omgeving gaat daar vóór, dus de helper
+wint en die bestanden zijn alleen de terugval wanneer een helper ontbreekt.
 
 De twee Cerebras-sleutels staan bewust apart: de native provider
 (`api.cerebras.ai`, `api_key_env = CEREBRAS_API_KEY`) en de Hugging Face-router

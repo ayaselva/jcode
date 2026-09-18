@@ -71,7 +71,10 @@ impl Agent {
         mut snapshot: jcode_provider_core::ModelCatalogSnapshot,
     ) -> jcode_provider_core::ModelCatalogSnapshot {
         let scope = crate::config::config();
-        let current_model = snapshot.provider_model.clone().unwrap_or_default();
+        let current_model = match snapshot.provider_model.as_deref() {
+            Some(model) => model.to_string(),
+            None => String::new(),
+        };
         snapshot.model_routes = crate::provider::filter_model_routes_by_model_allowlist(
             crate::provider::filter_model_routes_by_provider_allowlist(
                 snapshot.model_routes,
