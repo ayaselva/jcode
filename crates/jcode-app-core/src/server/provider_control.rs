@@ -68,7 +68,7 @@ async fn available_models_snapshot(agent: &Arc<Mutex<Agent>>) -> ModelCatalogSna
 }
 
 fn available_models_snapshot_from_provider(provider: &Arc<dyn Provider>) -> ModelCatalogSnapshot {
-    ModelCatalogSnapshot::from_provider(provider.as_ref())
+    Agent::scope_model_catalog_snapshot(ModelCatalogSnapshot::from_provider(provider.as_ref()))
 }
 
 pub(super) async fn available_models_updated_event(agent: &Arc<Mutex<Agent>>) -> ServerEvent {

@@ -29,17 +29,64 @@ impl Agent {
         self.provider.available_models_display()
     }
 
+    /// The advertised model names, scoped to the configured picker scope.
+    ///
+    /// The initial History payload ships model names without routes; sending the
+    /// unscoped list made the client treat the catalog as too large to classify
+    /// and fall back to placeholder routes. Scope the names the same way the
+    /// `AvailableModelsUpdated` snapshot scopes them.
+    pub fn scoped_available_models(&self) -> Vec<String> {
+        let scope = crate::config::config();
+        scope_model_names(
+            self.available_models_display(),
+            scope.provider.model_picker_models.as_deref(),
+            &self.provider_model(),
+        )
+    }
+
     pub fn model_routes(&self) -> Vec<crate::provider::ModelRoute> {
         self.provider.model_routes()
     }
 
     pub fn model_catalog_snapshot(&self) -> jcode_provider_core::ModelCatalogSnapshot {
-        jcode_provider_core::ModelCatalogSnapshot::new(
+        Self::scope_model_catalog_snapshot(jcode_provider_core::ModelCatalogSnapshot::new(
             Some(self.provider_name()),
             Some(self.provider_model()),
             self.available_models_display(),
             self.model_routes(),
-        )
+        ))
+    }
+
+    /// Scope a catalog snapshot to the configured picker scope
+    /// (`provider.model_picker_providers` + `provider.model_picker_models`).
+    ///
+    /// The published catalog is what a remote client renders in `/model`, so it
+    /// must carry exactly the configured picker routes. Sending every configured
+    /// provider's routes instead produced a frame over the live-update size cap,
+    /// which the server then downgraded to a names-only snapshot; a names-only
+    /// catalog makes the client rebuild placeholder routes that lose each route's
+    /// real provider and detail. Scoping here keeps the frame small, keeps the
+    /// provider labels truthful and lets the picker match provider-scoped rules.
+    pub fn scope_model_catalog_snapshot(
+        mut snapshot: jcode_provider_core::ModelCatalogSnapshot,
+    ) -> jcode_provider_core::ModelCatalogSnapshot {
+        let scope = crate::config::config();
+        let current_model = snapshot.provider_model.clone().unwrap_or_default();
+        snapshot.model_routes = crate::provider::filter_model_routes_by_model_allowlist(
+            crate::provider::filter_model_routes_by_provider_allowlist(
+                snapshot.model_routes,
+                scope.provider.model_picker_providers.as_deref(),
+                &current_model,
+            ),
+            scope.provider.model_picker_models.as_deref(),
+            &current_model,
+        );
+        snapshot.available_models = scope_model_names(
+            snapshot.available_models,
+            scope.provider.model_picker_models.as_deref(),
+            &current_model,
+        );
+        snapshot
     }
 
     pub fn registry(&self) -> Registry {
@@ -255,4 +302,40 @@ impl Agent {
     pub fn messages(&self) -> &[StoredMessage] {
         &self.session.messages
     }
+}
+
+/// Filter a model-name list to the `provider.model_picker_models` allowlist.
+///
+/// A name carries no provider, so matching is a whole-name, ASCII-case-
+/// insensitive comparison — the same rule `filter_model_routes_by_model_allowlist`
+/// applies to routes. The active model always stays listed and an allowlist that
+/// matches nothing keeps the full list, so scoping the catalog can never leave
+/// the picker empty.
+fn scope_model_names(
+    names: Vec<String>,
+    allowlist: Option<&[String]>,
+    current_model: &str,
+) -> Vec<String> {
+    let Some(allowlist) = allowlist else {
+        return names;
+    };
+    let allowed: Vec<&str> = allowlist
+        .iter()
+        .map(|entry| entry.trim())
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    if allowed.is_empty() {
+        return names;
+    }
+    let filtered: Vec<String> = names
+        .iter()
+        .filter(|name| {
+            name.as_str() == current_model
+                || allowed
+                    .iter()
+                    .any(|entry| entry.eq_ignore_ascii_case(name.trim()))
+        })
+        .cloned()
+        .collect();
+    if filtered.is_empty() { names } else { filtered }
 }

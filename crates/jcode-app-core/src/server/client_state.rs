@@ -619,7 +619,7 @@ pub(super) async fn send_history(
 
         let (available_models, available_models_ms) = if include_model_catalog {
             let available_models_start = Instant::now();
-            let available_models = agent_guard.available_models_display();
+            let available_models = agent_guard.scoped_available_models();
             (
                 available_models,
                 available_models_start.elapsed().as_millis(),

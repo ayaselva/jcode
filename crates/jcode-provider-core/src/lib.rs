@@ -1015,6 +1015,63 @@ pub fn model_route_provider_labels_match(route_provider: &str, current_provider:
     )
 }
 
+/// Apply the `provider.model_picker_providers` allowlist to a route list.
+///
+/// Each allowlist entry can name a provider label ("openai", "llama.cpp",
+/// "anthropic"), a route api method ("claude-oauth", "openrouter",
+/// "openai-compatible:myprofile"), or a bare openai-compatible profile id
+/// ("myprofile"). Matching is case/format-insensitive via the shared provider
+/// label normalizer. Routes for the active model are always kept so the
+/// current selection never disappears from the picker, and a filter that
+/// matches nothing falls back to the unfiltered list instead of an empty
+/// picker.
+pub fn filter_model_routes_by_provider_allowlist(
+    routes: Vec<ModelRoute>,
+    allowlist: Option<&[String]>,
+    current_model: &str,
+) -> Vec<ModelRoute> {
+    let Some(allowlist) = allowlist else {
+        return routes;
+    };
+    let allowed: Vec<String> = allowlist
+        .iter()
+        .map(|entry| normalize_model_route_provider_label(entry))
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    if allowed.is_empty() {
+        return routes;
+    }
+
+    let route_matches = |route: &ModelRoute| -> bool {
+        let provider = normalize_model_route_provider_label(&route.provider);
+        let api_method = normalize_model_route_provider_label(&route.api_method);
+        // "openai-compatible:myprofile" normalizes to "openaicompatible:myprofile";
+        // also expose the bare profile id for convenience.
+        let profile_id = route
+            .api_method
+            .split_once(':')
+            .map(|(_, profile)| normalize_model_route_provider_label(profile))
+            .unwrap_or_default();
+        allowed.iter().any(|entry| {
+            *entry == provider
+                || *entry == api_method
+                || (!profile_id.is_empty() && *entry == profile_id)
+                || model_route_provider_labels_match(&route.provider, entry)
+        })
+    };
+
+    let filtered: Vec<ModelRoute> = routes
+        .iter()
+        .filter(|route| route.model == current_model || route_matches(route))
+        .cloned()
+        .collect();
+    if filtered.is_empty() {
+        routes
+    } else {
+        filtered
+    }
+}
+
 /// Apply the `provider.model_picker_models` allowlist to a route list.
 ///
 /// Each entry is a model name as the picker shows it ("gpt-oss-120b",

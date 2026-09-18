@@ -20,6 +20,14 @@
 #                                (Doppler `infra/all`).
 #   DATABRICKS_TRIAL_TOKEN       Databricks Foundation Model APIs, via
 #                                `databricks-api-key` (Doppler `infra/all`).
+#   JCODE_PROVIDER_OPENROUTER_CURATED_API_KEY
+#                                OpenRouter key of the `openrouter-curated`
+#                                profile, via `pi-openrouter-main-vibe-key`
+#                                (Doppler `infra/all` OPENROUTER_API_KEY_MAIN_VIBE
+#                                -- the same credential omp holds).
+#   CHEAPERINFERENCE_API_KEY     CheaperInference key, via
+#                                `cheaperinference-api-key` (the private
+#                                provider env file; that file is the store).
 #
 # The two Cerebras keys must stay separate: the native provider and the Hugging
 # Face router are different endpoints with different credentials, and jcode
@@ -62,5 +70,13 @@ resolve_key CEREBRAS_API_KEY cerebras-api-key
 resolve_key HUGGINGFACE_CEREBRAS_API_KEY huggingface-cerebras-api-key
 resolve_key MODAL_RENT_API_KEY modal-rent-api-key
 resolve_key DATABRICKS_TRIAL_TOKEN databricks-api-key
+# The OpenRouter and CheaperInference keys are the same credentials omp holds:
+# the curated OpenRouter key is Doppler `infra/all` OPENROUTER_API_KEY_MAIN_VIBE
+# and the CheaperInference key is the private provider env file that
+# `cheaperinference-api-key` reads. Resolving them here keeps the launcher the
+# single key path; the profile env files stay as the fallback when a helper is
+# unavailable.
+resolve_key JCODE_PROVIDER_OPENROUTER_CURATED_API_KEY pi-openrouter-main-vibe-key
+resolve_key CHEAPERINFERENCE_API_KEY cheaperinference-api-key
 
 exec "$REAL_BIN" "$@"

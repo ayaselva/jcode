@@ -3287,12 +3287,28 @@ pub async fn run_model_command(
     let allowlist_set = allowlist
         .as_ref()
         .is_some_and(|entries| entries.iter().any(|entry| !entry.trim().is_empty()));
+    // Apply the same picker scope the catalog and the TUI use, so
+    // `jcode model list` shows exactly the models `/model` offers. Both filters
+    // fall back to the unfiltered routes, so an explicit `-p <provider>` whose
+    // models are outside the scope still lists that provider's catalog.
+    let provider_allowlist = crate::config::config()
+        .provider
+        .model_picker_providers
+        .clone();
+    let provider_allowlist_set = provider_allowlist
+        .as_ref()
+        .is_some_and(|entries| entries.iter().any(|entry| !entry.trim().is_empty()));
     let filtered_routes = crate::provider::filter_model_routes_by_model_allowlist(
-        choice_routes,
+        crate::provider::filter_model_routes_by_provider_allowlist(
+            choice_routes,
+            provider_allowlist.as_deref(),
+            provider.model().as_str(),
+        ),
         allowlist.as_deref(),
         provider.model().as_str(),
     );
     let models = if allowlist_set
+        || provider_allowlist_set
         || filtered_routes.len() != choice_route_count
         || filtered_routes.len() != routes.len()
     {

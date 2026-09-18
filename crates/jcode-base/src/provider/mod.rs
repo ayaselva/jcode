@@ -66,9 +66,9 @@ pub use jcode_provider_core::{
 };
 pub use jcode_provider_core::{
     FallbackPickOptions, error_looks_like_credential_failure,
-    filter_model_routes_by_model_allowlist, model_route_provider_labels_match,
-    normalize_model_route_provider_label, pick_next_fallback_route,
-    pick_next_fallback_route_with_options,
+    filter_model_routes_by_model_allowlist, filter_model_routes_by_provider_allowlist,
+    model_route_provider_labels_match, normalize_model_route_provider_label,
+    pick_next_fallback_route, pick_next_fallback_route_with_options,
 };
 pub use jcode_provider_core::{ProviderFailoverPrompt, parse_failover_prompt_message};
 pub use route_builders::{

@@ -138,65 +138,6 @@ fn model_picker_favorites_path() -> Option<std::path::PathBuf> {
 mod placeholder_routes;
 use placeholder_routes::route_supports_reasoning_effort;
 
-/// Apply the `provider.model_picker_providers` allowlist (issue #460).
-///
-/// Each allowlist entry can name a provider label ("openai", "llama.cpp",
-/// "anthropic"), a route api method ("claude-oauth", "openrouter",
-/// "openai-compatible:myprofile"), or a bare openai-compatible profile id
-/// ("myprofile"). Matching is case/format-insensitive via the shared provider
-/// label normalizer. Routes for the active model are always kept so the
-/// current selection never disappears from the picker, and a filter that
-/// matches nothing falls back to the unfiltered list instead of an empty
-/// picker.
-fn filter_routes_by_provider_allowlist(
-    routes: Vec<crate::provider::ModelRoute>,
-    allowlist: Option<&[String]>,
-    current_model: &str,
-) -> Vec<crate::provider::ModelRoute> {
-    use crate::provider::normalize_model_route_provider_label as normalize;
-
-    let Some(allowlist) = allowlist else {
-        return routes;
-    };
-    let allowed: Vec<String> = allowlist
-        .iter()
-        .map(|entry| normalize(entry))
-        .filter(|entry| !entry.is_empty())
-        .collect();
-    if allowed.is_empty() {
-        return routes;
-    }
-
-    let route_matches = |route: &crate::provider::ModelRoute| -> bool {
-        let provider = normalize(&route.provider);
-        let api_method = normalize(&route.api_method);
-        // "openai-compatible:myprofile" normalizes to "openaicompatible:myprofile";
-        // also expose the bare profile id for convenience.
-        let profile_id = route
-            .api_method
-            .split_once(':')
-            .map(|(_, profile)| normalize(profile))
-            .unwrap_or_default();
-        allowed.iter().any(|entry| {
-            *entry == provider
-                || *entry == api_method
-                || (!profile_id.is_empty() && *entry == profile_id)
-                || crate::provider::model_route_provider_labels_match(&route.provider, entry)
-        })
-    };
-
-    let filtered: Vec<crate::provider::ModelRoute> = routes
-        .iter()
-        .filter(|route| route.model == current_model || route_matches(route))
-        .cloned()
-        .collect();
-    if filtered.is_empty() {
-        routes
-    } else {
-        filtered
-    }
-}
-
 /// Hide provider routes that the catalog already marked unavailable.
 ///
 /// The picker used to keep these rows and render them in a disabled/dark-gray
@@ -1477,7 +1418,7 @@ impl App {
         };
         let routes = crate::provider::dedupe_model_routes(routes);
         let routes = filter_unavailable_model_routes(routes);
-        let routes = filter_routes_by_provider_allowlist(
+        let routes = crate::provider::filter_model_routes_by_provider_allowlist(
             routes,
             config.provider.model_picker_providers.as_deref(),
             &current_model,
@@ -3755,13 +3696,13 @@ mod tests {
     use super::{
         REMOTE_MODEL_CATALOG_CACHE_MAX_AGE_SECS, REMOTE_MODEL_CATALOG_CACHE_VERSION,
         REMOTE_MODEL_CATALOG_MAX_DETAIL_BYTES, RemoteModelCatalogCache,
-        collapse_duplicate_model_picker_entries, filter_routes_by_provider_allowlist,
-        filter_unavailable_model_routes, key_char_eq_ignore_ascii_case,
-        model_picker_effort_matches_default, model_picker_recommendation_rank,
-        model_picker_route_is_current, model_picker_route_is_default,
-        model_picker_route_is_recommended, picker_is_runtime_model_picker,
-        remote_model_catalog_cache_is_fresh, remote_model_catalog_cache_origin,
-        remote_model_catalog_snapshot_is_safe, route_supports_reasoning_effort,
+        collapse_duplicate_model_picker_entries, filter_unavailable_model_routes,
+        key_char_eq_ignore_ascii_case, model_picker_effort_matches_default,
+        model_picker_recommendation_rank, model_picker_route_is_current,
+        model_picker_route_is_default, model_picker_route_is_recommended,
+        picker_is_runtime_model_picker, remote_model_catalog_cache_is_fresh,
+        remote_model_catalog_cache_origin, remote_model_catalog_snapshot_is_safe,
+        route_supports_reasoning_effort,
     };
     use crate::tui::{
         AgentModelTarget, App, InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
@@ -4309,7 +4250,7 @@ mod tests {
         ];
 
         // Provider label match (normalized: case/dots/spaces insensitive).
-        let filtered = filter_routes_by_provider_allowlist(
+        let filtered = crate::provider::filter_model_routes_by_provider_allowlist(
             routes.clone(),
             Some(&["Llama.CPP".to_string()]),
             "unrelated-current",
@@ -4318,7 +4259,7 @@ mod tests {
         assert_eq!(filtered[0].model, "qwen3-coder");
 
         // Bare openai-compatible profile id match.
-        let filtered = filter_routes_by_provider_allowlist(
+        let filtered = crate::provider::filter_model_routes_by_provider_allowlist(
             routes.clone(),
             Some(&["llamacpp".to_string()]),
             "unrelated-current",
@@ -4327,7 +4268,7 @@ mod tests {
         assert_eq!(filtered[0].provider, "llama.cpp");
 
         // Api-method match plus alias-aware provider label match.
-        let filtered = filter_routes_by_provider_allowlist(
+        let filtered = crate::provider::filter_model_routes_by_provider_allowlist(
             routes.clone(),
             Some(&["claude-oauth".to_string(), "openrouter".to_string()]),
             "unrelated-current",
@@ -4344,7 +4285,7 @@ mod tests {
         ];
 
         // Current model's route survives even when its provider is filtered out.
-        let filtered = filter_routes_by_provider_allowlist(
+        let filtered = crate::provider::filter_model_routes_by_provider_allowlist(
             routes.clone(),
             Some(&["llamacpp".to_string()]),
             "gpt-5.5",
@@ -4353,7 +4294,7 @@ mod tests {
         assert_eq!(models, ["gpt-5.5", "qwen3-coder"]);
 
         // A filter matching nothing falls back to the full list.
-        let filtered = filter_routes_by_provider_allowlist(
+        let filtered = crate::provider::filter_model_routes_by_provider_allowlist(
             routes.clone(),
             Some(&["nonexistent".to_string()]),
             "unrelated-current",
@@ -4362,15 +4303,26 @@ mod tests {
 
         // None / empty / blank-entry allowlists are no-ops.
         assert_eq!(
-            filter_routes_by_provider_allowlist(routes.clone(), None, "x").len(),
+            crate::provider::filter_model_routes_by_provider_allowlist(routes.clone(), None, "x")
+                .len(),
             2
         );
         assert_eq!(
-            filter_routes_by_provider_allowlist(routes.clone(), Some(&[]), "x").len(),
+            crate::provider::filter_model_routes_by_provider_allowlist(
+                routes.clone(),
+                Some(&[]),
+                "x"
+            )
+            .len(),
             2
         );
         assert_eq!(
-            filter_routes_by_provider_allowlist(routes, Some(&["  ".to_string()]), "x").len(),
+            crate::provider::filter_model_routes_by_provider_allowlist(
+                routes,
+                Some(&["  ".to_string()]),
+                "x"
+            )
+            .len(),
             2
         );
     }
