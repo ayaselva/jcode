@@ -1482,6 +1482,11 @@ impl App {
             config.provider.model_picker_providers.as_deref(),
             &current_model,
         );
+        let routes = crate::provider::filter_model_routes_by_model_allowlist(
+            routes,
+            config.provider.model_picker_models.as_deref(),
+            &current_model,
+        );
 
         if routes.is_empty() {
             self.inline_interactive_state = None;

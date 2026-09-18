@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 mod display;
 pub use display::DisplayConfig;
+mod websearch;
+pub use websearch::{WebSearchConfig, WebSearchEngine};
 pub mod keybindings;
 mod serde_lenient;
 pub use keybindings::{
@@ -1059,76 +1061,6 @@ impl Default for FeatureConfig {
     }
 }
 
-/// Search engine used by the websearch tool.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum WebSearchEngine {
-    /// DuckDuckGo HTML search, no API key required.
-    #[default]
-    Duckduckgo,
-    /// Bing search. Uses the Bing API when configured, otherwise Bing HTML search.
-    Bing,
-    /// SearXNG metasearch instance (JSON API). Requires `searxng_url` (or the
-    /// `JCODE_SEARXNG_URL` env var) to point at a SearXNG instance. Useful on
-    /// hosts where DuckDuckGo/Bing block the request via TLS fingerprinting.
-    Searxng,
-}
-
-impl WebSearchEngine {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Duckduckgo => "duckduckgo",
-            Self::Bing => "bing",
-            Self::Searxng => "searxng",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "duckduckgo" | "ddg" => Some(Self::Duckduckgo),
-            "bing" => Some(Self::Bing),
-            "searxng" | "searx" => Some(Self::Searxng),
-            _ => None,
-        }
-    }
-}
-
-/// Configuration for the websearch tool.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WebSearchConfig {
-    /// Preferred engine when the tool input does not specify one.
-    pub engine: WebSearchEngine,
-    /// Keyless HTML engines to try after the preferred engine fails.
-    pub fallback_engines: Vec<WebSearchEngine>,
-    /// Optional Bing API key for primary Bing searches. Fallback Bing uses keyless HTML search.
-    pub bing_api_key: Option<String>,
-    /// Environment variable containing the Bing API key.
-    pub bing_api_key_env: String,
-    /// Bing market, e.g. "en-US" or "zh-CN".
-    pub bing_market: String,
-    /// Base URL of a SearXNG instance (e.g. "https://searx.example.org"), used
-    /// by the `searxng` engine. When empty, the `searxng_url_env` variable is
-    /// consulted instead.
-    pub searxng_url: Option<String>,
-    /// Environment variable containing the SearXNG base URL.
-    pub searxng_url_env: String,
-}
-
-impl Default for WebSearchConfig {
-    fn default() -> Self {
-        Self {
-            engine: WebSearchEngine::Duckduckgo,
-            fallback_engines: vec![WebSearchEngine::Bing],
-            bing_api_key: None,
-            bing_api_key_env: "JCODE_BING_API_KEY".to_string(),
-            bing_market: "en-US".to_string(),
-            searxng_url: None,
-            searxng_url_env: "JCODE_SEARXNG_URL".to_string(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -1164,6 +1096,14 @@ pub struct ProviderConfig {
     /// "openai-compatible:myprofile", ...), or openai-compatible profile ids
     /// ("myprofile"). The active model's routes always stay visible.
     pub model_picker_providers: Option<Vec<String>>,
+    /// When set (non-empty), /model and `jcode model list` only list these
+    /// models. Entries are model names exactly as the picker shows them
+    /// ("gpt-oss-120b", "openai/gpt-oss-120b", "Qwen/Qwen3.8-27B:cerebras");
+    /// matching compares the whole name case-insensitively, so an entry is
+    /// never split into a provider part and a model part. The provider scope is
+    /// `model_picker_providers`. The active model's routes always stay visible,
+    /// and a list that matches nothing falls back to the unfiltered routes.
+    pub model_picker_models: Option<Vec<String>>,
     /// Max seconds to wait for streaming data before timing out a request with
     /// no data received. Base budget only: high reasoning efforts scale it up
     /// automatically (see `jcode_base::provider::stream_idle_timeout_for_effort`).
@@ -1187,6 +1127,7 @@ impl Default for ProviderConfig {
             same_provider_account_failover: true,
             copilot_premium: None,
             model_picker_providers: None,
+            model_picker_models: None,
             stream_idle_timeout_secs: 180,
         }
     }

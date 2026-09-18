@@ -1,0 +1,34 @@
+# Kiesbare modellen in jcode: exact de `enabledModels` van omp.
+#
+# Eén regel per model, in de vorm die de picker toont: de modelnaam, inclusief
+# een eventuele `/` of `:`. De hele naam wordt hoofdletterongevoelig vergeleken;
+# een regel is nooit een provider/model-paar (namen als `openai/gpt-oss-120b`
+# zijn zelf modelnamen). Providers begrens je met model-picker-providers.txt.
+# Lege regels en #-commentaar worden genegeerd.
+#
+# De provider tussen haakjes is alleen documentatie: die hoort bij de naam uit
+# `enabledModels` van omp en bij het profiel in pc001/providers/.
+gpt-oss-120b                                    # cerebras
+qwen-3.8-27b                                    # cerebras
+deepseek-v4.1-flash                             # cheaperinference
+Qwen/Qwen3.8-27B:cerebras                       # huggingface-cerebras
+openai/gpt-oss-120b:cerebras                    # huggingface-cerebras
+gpt-5.6-sol                                     # openai (ChatGPT/Codex)
+gpt-6-astra                                     # openai (ChatGPT/Codex)
+google/gemini-3.8-flash                         # openrouter-curated
+meta/muse-spark-1.3                             # openrouter-curated
+z-ai/glm-5.3                                    # openrouter-curated
+moonshotai/kimi-k3                              # openrouter-curated
+qwen/qwen3.8-flash                              # openrouter-curated
+deepseek/deepseek-v4.1-flash                    # openrouter-curated
+anthropic/claude-fable-5.1                      # openrouter-curated
+anthropic/claude-opus-5                         # openrouter-curated
+anthropic/claude-sonnet-5                       # openrouter-curated
+deepseek/deepseek-v4-flash                      # openrouter-curated
+google/gemini-3.6-flash                         # openrouter-curated
+openai/gpt-5.6-luna                             # openrouter-curated
+openai/gpt-oss-120b                             # openrouter-curated
+openai/gpt-oss-safeguard-20b                    # openrouter-curated
+z-ai/glm-5.3-flash                              # openrouter-curated
+databricks-deepseek-v4-1-flash                  # databricks
+Rent-Model deepseek-ai/DeepSeek-V4.1-Flash      # modal-rent-b200

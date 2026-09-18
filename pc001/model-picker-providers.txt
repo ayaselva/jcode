@@ -1,0 +1,12 @@
+# Providers die de /model-picker van jcode toont: precies de providers van de
+# modellen in model-picker-models.txt. Eén regel per provider; waarden mogen een
+# providerlabel zijn ("openai"), een api-methode
+# ("openai-compatible:myprofile") of een providerprofiel-id ("myprofile").
+# Lege regels en #-commentaar worden genegeerd.
+openai
+cerebras
+openrouter-curated
+cheaperinference
+huggingface-cerebras
+modal-rent-b200
+databricks
