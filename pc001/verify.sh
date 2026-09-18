@@ -212,24 +212,15 @@ import pathlib
 import sys
 
 here = pathlib.Path(sys.argv[1])
-providers = {
-    line.split("#", 1)[0].strip()
-    for line in (here / "model-picker-providers.txt").read_text(encoding="utf-8").splitlines()
-}
-providers.discard("")
 models = []
 for line in (here / "model-picker-models.txt").read_text(encoding="utf-8").splitlines():
     entry = line.split("#", 1)[0].strip()
-    if not entry:
-        continue
-    head, _, rest = entry.partition("/")
-    if head in providers and rest:
-        entry = rest
-    models.append(entry)
+    if entry:
+        models.append(entry)
 print("\n".join(sorted(set(models))))
 PY
 )
-actual=$(JCODE_RUNTIME_DIR="${workdir}/run5" "${launcher}" model list 2>/dev/null | sort -u)
+actual=$(JCODE_RUNTIME_DIR="${workdir}/run5" "${launcher}" model list 2>/dev/null | LC_ALL=C sort -u)
 if [[ "${actual}" != "${expected}" ]]; then
   diff <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") || true
   fail "de kiesbare modellen wijken af van pc001/model-picker-models.txt"
