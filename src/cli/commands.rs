@@ -3281,11 +3281,24 @@ pub async fn run_model_command(
     }
 
     let routes = provider.model_routes();
-    let filtered_routes = filter_cli_model_routes_for_choice(choice, &routes);
-    let models = if filtered_routes.len() == routes.len() {
-        collect_cli_model_names(&routes, provider.available_models_display())
-    } else {
+    let choice_routes = filter_cli_model_routes_for_choice(choice, &routes);
+    let choice_route_count = choice_routes.len();
+    let allowlist = crate::config::config().provider.model_picker_models.clone();
+    let allowlist_set = allowlist
+        .as_ref()
+        .is_some_and(|entries| entries.iter().any(|entry| !entry.trim().is_empty()));
+    let filtered_routes = crate::provider::filter_model_routes_by_model_allowlist(
+        choice_routes,
+        allowlist.as_deref(),
+        provider.model().as_str(),
+    );
+    let models = if allowlist_set
+        || filtered_routes.len() != choice_route_count
+        || filtered_routes.len() != routes.len()
+    {
         collect_cli_model_names(&filtered_routes, Vec::new())
+    } else {
+        collect_cli_model_names(&filtered_routes, provider.available_models_display())
     };
 
     if models.is_empty() {

@@ -1096,6 +1096,14 @@ pub struct ProviderConfig {
     /// "openai-compatible:myprofile", ...), or openai-compatible profile ids
     /// ("myprofile"). The active model's routes always stay visible.
     pub model_picker_providers: Option<Vec<String>>,
+    /// When set (non-empty), /model and `jcode model list` only list these
+    /// models. Entries are either a bare model id ("gpt-oss-120b") or a
+    /// provider-scoped "provider/model" pair ("cerebras/gpt-oss-120b",
+    /// "openrouter-curated/google/gemini-3.8-flash"); the provider part matches
+    /// provider labels, route api methods, or openai-compatible profile ids.
+    /// The active model's routes always stay visible, and a list that matches
+    /// nothing falls back to the unfiltered routes.
+    pub model_picker_models: Option<Vec<String>>,
     /// Max seconds to wait for streaming data before timing out a request with
     /// no data received. Base budget only: high reasoning efforts scale it up
     /// automatically (see `jcode_base::provider::stream_idle_timeout_for_effort`).
@@ -1119,6 +1127,7 @@ impl Default for ProviderConfig {
             same_provider_account_failover: true,
             copilot_premium: None,
             model_picker_providers: None,
+            model_picker_models: None,
             stream_idle_timeout_secs: 180,
         }
     }
