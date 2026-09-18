@@ -197,26 +197,53 @@ jcode debug -s /tmp/jcode-picker-check/jcode.sock client:model-picker 2000
 ```
 
 ```
-open True filtered_count 24 rows 24
-verwacht 24 gekregen 24
+open True filtered_count 141 rows 141
+unieke modellen: 24
 ontbreekt: []
-extra: []
+extra (0): []
+api_methods: ['openai-compatible:cerebras', 'openai-compatible:cheaperinference',
+ 'openai-compatible:databricks', 'openai-compatible:huggingface-cerebras',
+ 'openai-compatible:modal-rent-b200', 'openai-compatible:openrouter',
+ 'openai-compatible:openrouter-curated', 'openai-oauth', 'openrouter']
 ```
 
-De pickerrrijen komen binnen als `api_method: "remote-catalog"` met het profiel
-van het actieve model als providerlabel. Een allowlist-regel is daarom een hele
-modelnaam, nooit een provider/model-paar: namen als `openai/gpt-oss-120b` zijn
-zelf modelnamen, en een providerprefix zou in deze modus geen onderscheid maken.
-Met provider-scoped regels (de eerste opzet) zakte de picker hier naar de 15
-openrouter-modellen, en nadat de sleutelherordening meer providers actief maakte
-kwamen er juist twee vreemde modellen bij (`gpt-5.6-luna`, `deepseek-v4-flash`)
-doordat zo'n regel na normalisatie ook de native route van die provider raakte.
-Ter controle: met een lege `model_picker_models` toonde dezelfde picker 423
-modellen, en met de namenlijst exact de 24 hierboven.
+De 141 rijen zijn de 24 modellen maal hun denkniveaus (`… (high)`, `… (med)`, …);
+de unieke modelnamen zijn er precies 24. Zodra de catalogus volledig gehydrateerd
+is, draagt elke rij zijn echte profiel (`openai-compatible:…`, `openai-oauth`).
+
+In de tussenstand van de client staan dezelfde rijen nog als
+`api_method: "remote-catalog"` met het profiel van het actieve model als
+providerlabel. Een allowlist-regel is daarom een hele modelnaam, nooit een
+provider/model-paar: namen als `openai/gpt-oss-120b` zijn zelf modelnamen, en een
+providerprefix zou in die tussenstand geen onderscheid maken. Met provider-scoped
+regels (de eerste opzet) zakte de picker naar de 15 openrouter-modellen, en nadat
+de sleutelherordening meer providers actief maakte kwamen er juist twee vreemde
+modellen bij (`gpt-5.6-luna`, `deepseek-v4-flash`) doordat zo'n regel na
+normalisatie ook de native route van die provider raakte. Ter controle: met een
+lege `model_picker_models` toonde dezelfde picker 423 modellen, en met de
+namenlijst exact de 24 hierboven.
+
+## Fase 6 — de sleutels van alle providers
+
+Elk model uit de lijst is met zijn eigen sleutelpad nagelopen (2026-09-18). De
+twee Cerebras-helpers wezen na de sleutelherordening in Doppler nog naar de oude
+namen (`CEREBRAS_API_KEY` voor het Hugging Face-token, `CEREBRAS` voor het
+native token) en zijn bijgesteld naar `HF_TOKEN` en `CEREBRAS_API_KEY`.
+
+| Provider | Controle | Uitkomst |
+|---|---|---|
+| openrouter-curated | `GET openrouter.ai/api/v1/models` + `jcode run` | 200, echt antwoord |
+| cheaperinference | `GET …/v1/models` + `jcode run` | 200, echt antwoord |
+| huggingface-cerebras | `GET router.huggingface.co/v1/models` + `jcode run` | 200, echt antwoord (fase 3) |
+| openai (ChatGPT/Codex OAuth) | `jcode run -p openai -m gpt-5.6-sol` | echt antwoord |
+| databricks | `jcode run --provider-profile databricks -m databricks-deepseek-v4-1-flash` | echt antwoord |
+| cerebras (native) | `GET api.cerebras.ai/v1/models` + `jcode run` | 200 op de catalogus; modelaanroep 402 `payment_required_error param=quota` |
+| modal-rent-b200 | `GET …--rent-ai-serve…/v1/models` | 503 — de B200 is gestopt en wordt alleen gehuurd tijdens gebruik |
 
 ✅ jcode gebruikt Exa, de Hugging Face/Cerebras-provider werkt met de sleutel uit
-Doppler, zonder sleutel volgt een expliciete foutmelding en de picker — CLI én
-TUI — toont exact de modellen van omp.
+Doppler, zonder sleutel volgt een expliciete foutmelding, de picker — CLI én TUI —
+toont exact de modellen van omp en elk model heeft een werkend sleutelpad
+(cerebras wacht op quota bij de provider, modal-rent op een gehuurde server).
 
 ## Code-verificatie
 
