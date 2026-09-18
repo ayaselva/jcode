@@ -1671,6 +1671,7 @@ async fn handle_remote_key_internal(
                     app.clear_provider_messages();
                     app.clear_display_messages();
                     app.queued_messages.clear();
+                    release_queued_followup_hold(app, "/clear");
                     app.pasted_contents.clear();
                     app.pending_images.clear();
                     app.clear_streaming_render_state();

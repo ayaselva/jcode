@@ -300,6 +300,7 @@ pub(super) fn reset_current_session(app: &mut App) {
     // (see the comments at the /rewind handlers in commands.rs).
     crate::tui::mermaid::clear_active_diagrams();
     app.queued_messages.clear();
+    super::remote::release_queued_followup_hold(app, "session reset");
     app.pasted_contents.clear();
     app.pending_images.clear();
     app.active_skill = None;

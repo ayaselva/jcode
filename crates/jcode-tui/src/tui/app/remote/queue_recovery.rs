@@ -115,6 +115,63 @@ impl App {
     }
 }
 
+/// Hold queued dispatch until the turn that refused a queued follow-up ends.
+///
+/// Setting this is what stops the resend loop: the busy-rejection path sets
+/// `is_processing` and re-adopts the running turn, but any later stream event
+/// clears `remote_resume_activity`, which used to re-arm the "restored startup
+/// follow-up" dispatch and resend the same payload on every delta. Only a real
+/// turn boundary releases the hold again.
+pub(in crate::tui::app) fn hold_queued_followups_until_turn_end(app: &mut App) {
+    if app.queued_followup_awaits_turn_end {
+        return;
+    }
+    app.queued_followup_awaits_turn_end = true;
+    crate::logging::info(&format!(
+        "QUEUED_FOLLOWUP_HOLD engaged queued={} hidden_reminders={} interleave={}",
+        app.queued_messages.len(),
+        app.hidden_queued_system_messages.len(),
+        app.interleave_message.is_some(),
+    ));
+}
+
+/// Release the queued-dispatch hold after a real turn boundary.
+pub(in crate::tui::app) fn release_queued_followup_hold(app: &mut App, reason: &str) {
+    if !app.queued_followup_awaits_turn_end {
+        return;
+    }
+    app.queued_followup_awaits_turn_end = false;
+    crate::logging::info(&format!(
+        "QUEUED_FOLLOWUP_HOLD released reason={} queued={}",
+        reason,
+        app.queued_messages.len(),
+    ));
+}
+
+/// Drop the transcript echo of a queued payload the server refused.
+///
+/// Queue dispatch echoes each user message into the transcript *before* the
+/// request is accepted. When the server refuses the send, the payload goes back
+/// on the queue and the queue preview owns it again; leaving the echo behind
+/// would render the same prompt once per dispatch attempt, which is how the
+/// observed refusal loop stacked identical prompts in the transcript. Only the
+/// trailing echo is dropped, so a prompt that later output already followed is
+/// never rewritten.
+pub(in crate::tui::app) fn drop_undelivered_queued_echo(app: &mut App) {
+    let is_trailing_echo = match (app.queued_messages.first(), app.display_messages.last()) {
+        (Some(head), Some(last)) => last.role == "user" && last.content == *head,
+        _ => false,
+    };
+    if !is_trailing_echo {
+        return;
+    }
+    let Some(echo) = app.display_messages.pop() else {
+        return;
+    };
+    app.adjust_display_message_stats(&echo, false);
+    app.bump_display_messages_version();
+}
+
 /// Recover an in-flight queued continuation back into the queue.
 ///
 /// A queued follow-up that was already taken from `queued_messages` and handed

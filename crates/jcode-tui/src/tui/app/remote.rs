@@ -31,9 +31,15 @@ mod workspace;
 #[cfg(test)]
 pub(super) use key_handling::reload_stale_remote_server_before_update;
 use queue_recovery::{
+    drop_undelivered_queued_echo, hold_queued_followups_until_turn_end,
     recover_local_interleave_to_queue, recover_stranded_soft_interrupts,
     recover_undelivered_queued_continuation,
 };
+// Session-reset paths outside the remote subtree (local `/clear`, Ctrl+R
+// recovery) discard the queue too, so they must be able to drop a stale
+// queued-dispatch hold.
+#[allow(unused_imports)]
+pub(super) use queue_recovery::release_queued_followup_hold;
 // Re-export for sibling modules and tests that access reconnect state and helpers
 // through `super::remote::*` without reaching into private submodules directly.
 #[allow(unused_imports)]
@@ -227,7 +233,8 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         return needs_redraw;
     }
 
-    if !app.is_processing && !app.queued_messages.is_empty() {
+    if !app.is_processing && !app.queued_followup_awaits_turn_end && !app.queued_messages.is_empty()
+    {
         let queued_messages = std::mem::take(&mut app.queued_messages);
         let hidden_reminders = std::mem::take(&mut app.hidden_queued_system_messages);
         let (messages, reminder, display_system_messages) =
@@ -274,7 +281,10 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         needs_redraw = true;
     }
 
-    if !app.is_processing && !app.hidden_queued_system_messages.is_empty() {
+    if !app.is_processing
+        && !app.queued_followup_awaits_turn_end
+        && !app.hidden_queued_system_messages.is_empty()
+    {
         let reminders = std::mem::take(&mut app.hidden_queued_system_messages);
         let combined = reminders.join("\n\n");
         crate::logging::info(&format!(
@@ -930,6 +940,7 @@ pub(super) fn handle_disconnect(
     app.current_message_id = None;
     app.last_stream_activity = None;
     app.remote_resume_activity = None;
+    release_queued_followup_hold(app, "disconnect");
     let ops = app.stream_buffer.flush();
     app.apply_stream_ops(ops);
     if !app.streaming.streaming_text.is_empty() {
@@ -1191,6 +1202,14 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
 
     if app.pending_queued_dispatch {
         note_startup_submit_deferred(app, "pending_queued_dispatch in progress");
+        return;
+    }
+
+    if app.queued_followup_awaits_turn_end {
+        // The server refused a queued follow-up because a turn is still running.
+        // Resending now is refused again, and every refusal re-queues (and, in
+        // the old code, re-echoed) the same payload, so the queue waits for the
+        // turn boundary that releases the hold instead of hammering the server.
         return;
     }
 
@@ -1518,8 +1537,10 @@ const QUEUED_FOLLOWUP_STARVATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// queued follow-up has been idle-but-undispatched and re-arm the dispatch past
 /// the timeout, logging it so a recurrence is diagnosable from logs alone.
 fn detect_starved_queued_followup(app: &mut App) -> bool {
-    let starved_candidate =
-        !app.is_processing && !app.pending_queued_dispatch && app.has_queued_followups();
+    let starved_candidate = !app.is_processing
+        && !app.pending_queued_dispatch
+        && !app.queued_followup_awaits_turn_end
+        && app.has_queued_followups();
     if !starved_candidate {
         app.queued_followup_starved_since = None;
         return false;

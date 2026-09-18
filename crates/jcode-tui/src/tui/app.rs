@@ -1513,6 +1513,15 @@ pub struct App {
     // After an interrupt, wait one redraw before auto-dispatching queued followups so
     // the queued preview can render in the interrupted state first.
     pending_queued_dispatch: bool,
+    // Set when the server refused a queued follow-up because a turn was still
+    // running. The payload goes back on the queue and the client re-adopts the
+    // running turn, but that re-adoption is only a guess: the next stream event
+    // clears `remote_resume_activity`, which re-arms the "restored startup
+    // follow-up" dispatch and resends the payload on every delta. Observed live
+    // as one prompt arriving dozens of times per second and stacking in the
+    // transcript. Hold queued dispatch until a real turn boundary (Done,
+    // Interrupted, session change, disconnect) proves the server is free.
+    queued_followup_awaits_turn_end: bool,
     // Tab completion state: (base_input, suggestion_index)
     // base_input is the original input before cycling, suggestion_index is current position
     tab_completion_state: Option<(String, usize)>,

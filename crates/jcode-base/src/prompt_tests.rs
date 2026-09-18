@@ -78,7 +78,11 @@ fn test_load_agents_md_files_uses_sandboxed_global_files() {
     .unwrap();
 
     let project_dir = tempfile::TempDir::new().unwrap();
-    std::fs::write(project_dir.path().join("AGENTS.md"), "project agents instructions").unwrap();
+    std::fs::write(
+        project_dir.path().join("AGENTS.md"),
+        "project agents instructions",
+    )
+    .unwrap();
     let (content, info) = load_agents_md_files_from_dir(Some(project_dir.path()));
 
     assert!(info.has_global_agents_md);

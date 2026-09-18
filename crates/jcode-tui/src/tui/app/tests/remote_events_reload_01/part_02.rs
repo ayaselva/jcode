@@ -371,3 +371,88 @@ fn test_remote_rewind_completion_shows_undo_hint_after_history_refresh() {
     assert!(last.content.contains("✓ Rewound to message 1"));
     assert!(last.content.contains("Undo anytime with /rewind undo"));
 }
+
+/// Regression: a queued follow-up the server refuses because a turn is still
+/// running must not be re-dispatched until that turn actually ends.
+///
+/// The refusal put the payload back on the queue and re-adopted the running
+/// turn, but the next stream event cleared `remote_resume_activity` and the
+/// "restored startup follow-up" dispatch re-sent the same prompt every delta:
+/// one user prompt arrived dozens of times per second and stacked in the
+/// transcript.
+#[test]
+fn server_busy_rejection_holds_queued_followup_until_the_running_turn_ends() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    let user_echoes = |app: &App| {
+        app.display_messages()
+            .iter()
+            .filter(|message| message.role == "user")
+            .map(|message| message.content.clone())
+            .collect::<Vec<String>>()
+    };
+
+    // The client believed the session was idle and dispatched the queued
+    // follow-up: the prompt is echoed locally and the payload is in flight.
+    app.is_processing = true;
+    app.status = ProcessingStatus::Thinking(Instant::now());
+    app.current_message_id = None;
+    app.remote_resume_activity = None;
+    app.queued_messages.push("queued followup".to_string());
+    rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
+    assert_eq!(app.queued_messages(), &[] as &[String]);
+    assert!(app.current_message_id.is_some());
+    assert!(matches!(app.status, ProcessingStatus::Sending));
+
+    // The server refuses it because its previous turn is still running.
+    app.handle_server_event(
+        crate::protocol::ServerEvent::Error {
+            id: 1,
+            message: "Already processing a message".to_string(),
+            retry_after_secs: None,
+        },
+        &mut remote,
+    );
+    assert_eq!(app.queued_messages(), &["queued followup"]);
+    assert!(app.queued_followup_awaits_turn_end);
+    assert!(app.is_processing);
+    assert!(
+        user_echoes(&app).is_empty(),
+        "the refused payload belongs to the queue, not the transcript: {:?}",
+        user_echoes(&app)
+    );
+
+    // Usage from the still-running turn used to re-arm the dispatch.
+    app.handle_server_event(
+        crate::protocol::ServerEvent::TokenUsage {
+            input: 123,
+            output: 45,
+            cache_read_input: None,
+            cache_creation_input: None,
+        },
+        &mut remote,
+    );
+    rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
+    rt.block_on(remote::handle_tick(&mut app, &mut remote));
+    assert_eq!(
+        app.queued_messages(),
+        &["queued followup"],
+        "a refused follow-up must wait for the running turn to end"
+    );
+    assert!(user_echoes(&app).is_empty());
+
+    // The resumed turn ends: the hold releases and the follow-up goes out once.
+    app.handle_server_event(
+        crate::protocol::ServerEvent::Done { id: 4242 },
+        &mut remote,
+    );
+    assert!(!app.queued_followup_awaits_turn_end);
+    assert!(!app.is_processing);
+    rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
+    assert!(app.queued_messages().is_empty());
+    assert_eq!(user_echoes(&app), vec!["queued followup".to_string()]);
+}

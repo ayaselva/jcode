@@ -1,6 +1,6 @@
 use super::{
     App, DisplayMessage, ProcessingStatus, handle_terminal_event_while_disconnected,
-    process_remote_followups,
+    process_remote_followups, release_queued_followup_hold,
 };
 use crate::tool::selfdev::ReloadContext;
 use crate::tui::app::PendingReloadReconnectStatus;
@@ -835,6 +835,7 @@ pub(in crate::tui::app) fn finalize_reload_reconnect(
                 app.last_stream_activity = None;
                 app.replay_processing_started_ms = None;
                 app.replay_elapsed_override = None;
+                release_queued_followup_hold(app, "reload reconnect");
             }
 
             crate::logging::info(&format!(

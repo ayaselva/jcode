@@ -171,7 +171,10 @@ fn route_method_display(route: &crate::tui::PickerOption, model: Option<&str>) -
         && crate::provider::ModelRouteApiMethod::parse(&route.api_method).is_openrouter()
         && let Some(model) = model
         && let Some(price) = crate::provider::openrouter::completion_price_eur_label_for_model(
-            model.rsplit_once(" (").map(|(base, _)| base).unwrap_or(model),
+            model
+                .rsplit_once(" (")
+                .map(|(base, _)| base)
+                .unwrap_or(model),
         )
     {
         suffix.push(' ');
@@ -431,7 +434,8 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         let route = entry.active_option();
         if let Some(r) = route {
             max_provider_len = max_provider_len.max(display_width(r.provider.as_str()));
-            max_via_len = max_via_len.max(display_width(&route_method_display(r, Some(&entry.name))));
+            max_via_len =
+                max_via_len.max(display_width(&route_method_display(r, Some(&entry.name))));
         }
         if is_account_picker {
             let (title, _) = account_picker_entry_title(entry, show_account_provider_badge);

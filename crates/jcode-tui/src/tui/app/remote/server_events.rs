@@ -1050,6 +1050,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 ));
             }
             app.schedule_queued_dispatch_after_interrupt();
+            release_queued_followup_hold(app, "interrupted");
             app.push_display_message(DisplayMessage::system("Interrupted"));
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
@@ -1093,6 +1094,12 @@ pub(in crate::tui::app) fn handle_server_event(
             true
         }
         ServerEvent::Done { id } => {
+            // A Done proves the session finished a turn, which is exactly the
+            // boundary a busy rejection waits for. Release before the
+            // attribution checks below: a turn that produced no stream evidence
+            // this client observed would otherwise leave the queue held until
+            // the stall watchdog fired.
+            release_queued_followup_hold(app, "done");
             let mut auto_poked = false;
             let mut completed_current_message = false;
             crate::logging::info(&format!(
@@ -1224,6 +1231,11 @@ pub(in crate::tui::app) fn handle_server_event(
             if message == "Already processing a message"
                 && recover_undelivered_queued_continuation(app, "server busy rejection")
             {
+                // The refused payload was echoed into the transcript before the
+                // send; the queue owns it again, so drop that phantom echo and
+                // hold every queued dispatch until the running turn ends.
+                drop_undelivered_queued_echo(app);
+                hold_queued_followups_until_turn_end(app);
                 app.is_processing = true;
                 app.status = ProcessingStatus::Thinking(Instant::now());
                 app.current_message_id = None;
@@ -1655,6 +1667,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.is_processing = false;
                 app.status = ProcessingStatus::Idle;
                 app.follow_chat_bottom();
+                release_queued_followup_hold(app, "session changed");
                 if prev_session_id.is_some() {
                     app.queued_messages.clear();
                     app.interleave_message = None;
