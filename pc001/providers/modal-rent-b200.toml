@@ -1,0 +1,18 @@
+[providers.modal-rent-b200]
+type = "open-ai-compatible"
+base_url = "https://m-j-f-tulp--rent-ai-serve.us-east.modal.direct/v1"
+auth = "bearer"
+api_key_env = "MODAL_RENT_API_KEY"
+default_model = "Rent-Model deepseek-ai/DeepSeek-V4.1-Flash"
+requires_api_key = true
+provider_routing = false
+model_catalog = false
+allow_provider_pinning = false
+
+[[providers.modal-rent-b200.models]]
+id = "Rent-Model deepseek-ai/DeepSeek-V4.1-Flash"
+context_window = 1048576
+input = [
+    "text",
+    "image",
+]

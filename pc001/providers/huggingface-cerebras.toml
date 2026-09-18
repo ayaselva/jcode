@@ -2,7 +2,9 @@
 type = "open-ai-compatible"
 base_url = "https://router.huggingface.co/v1"
 auth = "bearer"
-api_key_env = "CEREBRAS_API_KEY"
+# Eigen variabele: CEREBRAS_API_KEY hoort bij de native Cerebras-provider van
+# jcode (api.cerebras.ai); deze Hermes-router gebruikt de Hugging Face-token.
+api_key_env = "HUGGINGFACE_CEREBRAS_API_KEY"
 env_file = "huggingface-cerebras.env"
 default_model = "Qwen/Qwen3.8-27B:cerebras"
 requires_api_key = true
