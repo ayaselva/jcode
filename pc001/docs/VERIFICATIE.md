@@ -196,7 +196,8 @@ JCODE_RUNTIME_DIR=/tmp/jcode-picker-check ~/.local/bin/jcode --no-update \
 jcode debug -s /tmp/jcode-picker-check/jcode.sock client:model-picker 2000
 ```
 
-Meting op de geïnstalleerde build `a8ee05448` (2026-09-18):
+Meting op de geïnstalleerde build (broncommit `f7ac647dd`, gepubliceerd als
+`911623180`, 2026-09-18):
 
 ```
 open True filtered_count 141 rows 141
