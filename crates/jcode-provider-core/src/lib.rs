@@ -1015,6 +1015,53 @@ pub fn model_route_provider_labels_match(route_provider: &str, current_provider:
     )
 }
 
+/// Apply the `provider.model_picker_models` allowlist to a route list.
+///
+/// Each entry is a model name as the picker shows it ("gpt-oss-120b",
+/// "openai/gpt-oss-120b", "Qwen/Qwen3.8-27B:cerebras"). Matching is an exact,
+/// ASCII-case-insensitive comparison of the whole name: an entry is never split
+/// into a provider part plus a model part, because model names themselves
+/// contain slashes and colons, and a remote client sees every route labelled
+/// with the profile of the active model anyway. The provider scope is
+/// `model_picker_providers`.
+///
+/// Routes for the active model are always kept so the current selection never
+/// disappears from the picker, and an allowlist that matches nothing falls back
+/// to the unfiltered list instead of an empty picker.
+pub fn filter_model_routes_by_model_allowlist(
+    routes: Vec<ModelRoute>,
+    allowlist: Option<&[String]>,
+    current_model: &str,
+) -> Vec<ModelRoute> {
+    let Some(allowlist) = allowlist else {
+        return routes;
+    };
+    let allowed: Vec<&str> = allowlist
+        .iter()
+        .map(|entry| entry.trim())
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    if allowed.is_empty() {
+        return routes;
+    }
+
+    let filtered: Vec<ModelRoute> = routes
+        .iter()
+        .filter(|route| {
+            route.model == current_model
+                || allowed
+                    .iter()
+                    .any(|entry| entry.eq_ignore_ascii_case(route.model.trim()))
+        })
+        .cloned()
+        .collect();
+    if filtered.is_empty() {
+        routes
+    } else {
+        filtered
+    }
+}
+
 pub fn model_route_provider_labels_related(route_provider: &str, login_provider: &str) -> bool {
     let route = normalize_model_route_provider_label(route_provider);
     let login = normalize_model_route_provider_label(login_provider);
@@ -1417,6 +1464,91 @@ mod tests {
         assert!(!model_route_provider_labels_match("OpenAI", "OpenRouter"));
         assert!(!model_route_provider_labels_match("", ""));
         assert!(!model_route_provider_labels_related("OpenAI", ""));
+    }
+
+    #[test]
+    fn model_allowlist_keeps_only_listed_models_and_always_keeps_the_active_one() {
+        let route = |model: &str, provider: &str, api_method: &str| ModelRoute {
+            model: model.to_string(),
+            provider: provider.to_string(),
+            api_method: api_method.to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        };
+        let routes = || {
+            vec![
+                route("gpt-oss-120b", "Cerebras", "openai-compatible:cerebras"),
+                route(
+                    "google/gemini-3.8-flash",
+                    "OpenRouter",
+                    "openai-compatible:openrouter-curated",
+                ),
+                route("gpt-5.6-terra", "OpenAI", "openai-oauth"),
+            ]
+        };
+
+        let allowed = vec![
+            "gpt-oss-120b".to_string(),
+            "GOOGLE/GEMINI-3.8-FLASH".to_string(),
+        ];
+        let filtered =
+            filter_model_routes_by_model_allowlist(routes(), Some(&allowed), "deepseek-v4-flash");
+        let models: Vec<&str> = filtered.iter().map(|entry| entry.model.as_str()).collect();
+        assert_eq!(models, vec!["gpt-oss-120b", "google/gemini-3.8-flash"]);
+
+        // An entry is a whole model name, never a "provider/model" pair: model
+        // names contain slashes themselves and a remote client labels every
+        // route with the active profile anyway. So this allowlist keeps only
+        // the bare "gpt-oss-120b" route and must not treat
+        // "openrouter-curated/gpt-5.6-terra" as a provider-scoped way to select
+        // the unrelated bare "gpt-5.6-terra" route.
+        let scoped = vec![
+            "gpt-oss-120b".to_string(),
+            "openrouter-curated/gpt-5.6-terra".to_string(),
+        ];
+        let filtered =
+            filter_model_routes_by_model_allowlist(routes(), Some(&scoped), "deepseek-v4-flash");
+        let models: Vec<&str> = filtered.iter().map(|entry| entry.model.as_str()).collect();
+        assert_eq!(models, vec!["gpt-oss-120b"]);
+
+        // The active model stays listed even when it is not in the allowlist.
+        let filtered =
+            filter_model_routes_by_model_allowlist(routes(), Some(&allowed), "gpt-5.6-terra");
+        let models: Vec<&str> = filtered.iter().map(|entry| entry.model.as_str()).collect();
+        assert_eq!(
+            models,
+            vec!["gpt-oss-120b", "google/gemini-3.8-flash", "gpt-5.6-terra"]
+        );
+    }
+
+    #[test]
+    fn model_allowlist_without_a_match_falls_back_to_every_route() {
+        let route = ModelRoute {
+            model: "gpt-oss-120b".to_string(),
+            provider: "Cerebras".to_string(),
+            api_method: "openai-compatible:cerebras".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        };
+        let allowed = vec!["niets-dat-bestaat".to_string()];
+        let filtered =
+            filter_model_routes_by_model_allowlist(vec![route], Some(&allowed), "anders");
+        assert_eq!(filtered.len(), 1);
+
+        let unset = vec![ModelRoute {
+            model: "gpt-oss-120b".to_string(),
+            provider: "Cerebras".to_string(),
+            api_method: "openai-compatible:cerebras".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        }];
+        assert_eq!(
+            filter_model_routes_by_model_allowlist(unset, None, "anders").len(),
+            1
+        );
     }
 
     #[test]

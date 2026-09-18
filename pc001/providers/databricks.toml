@@ -1,0 +1,18 @@
+[providers.databricks]
+type = "open-ai-compatible"
+base_url = "https://dbc-bf09fd49-31a5.cloud.databricks.com/serving-endpoints"
+auth = "bearer"
+api_key_env = "DATABRICKS_TRIAL_TOKEN"
+default_model = "databricks-deepseek-v4-1-flash"
+requires_api_key = true
+provider_routing = false
+model_catalog = false
+allow_provider_pinning = false
+
+[[providers.databricks.models]]
+id = "databricks-deepseek-v4-1-flash"
+context_window = 1048576
+input = [
+    "text",
+    "image",
+]

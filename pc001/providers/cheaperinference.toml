@@ -1,0 +1,19 @@
+[providers.cheaperinference]
+type = "open-ai-compatible"
+base_url = "https://api.cheaperinference.com/v1"
+auth = "bearer"
+api_key_env = "CHEAPERINFERENCE_API_KEY"
+env_file = "cheaperinference.env"
+default_model = "deepseek-v4.1-flash"
+requires_api_key = true
+provider_routing = false
+model_catalog = false
+allow_provider_pinning = false
+
+[[providers.cheaperinference.models]]
+id = "deepseek-v4.1-flash"
+context_window = 1048576
+input = [
+    "text",
+    "image",
+]

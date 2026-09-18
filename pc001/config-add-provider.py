@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Add a jcode provider profile (and its model-picker entry) to a config.toml.
+"""Add or replace a jcode provider profile (and its model-picker entry).
 
 Idempotent: the block is appended only when the ``[providers.<name>]`` header of
 the block file is absent, and the picker entry is inserted into
 ``model_picker_providers`` inside ``[provider]`` only when it is missing.
-Everything else in the file is left untouched, so the user's other settings
-survive.
+``--set`` replaces an existing block (including its ``[[providers.<name>.*]]``
+sub-tables) with the block file's content instead of leaving it alone, so the
+declared model list stays in sync with the file. Everything else in the file is
+left untouched, so the user's other settings survive.
 
 Usage:
   config-add-provider.py <config.toml> <provider-block.toml> <picker-entry>
+  config-add-provider.py --set <config.toml> <provider-block.toml> <picker-entry>
   config-add-provider.py --get <config.toml> <provider-name>
   config-add-provider.py --get-picker <config.toml> <picker-entry>
 """
@@ -144,6 +147,34 @@ def add_provider_block(text: str, block: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def set_provider_block(text: str, block: str) -> str:
+    """Replace an existing provider block, or append it when absent."""
+    lines = text.splitlines()
+    header = block_header(block)
+    if not has_section(lines, header):
+        return add_provider_block(text, block)
+
+    name = header[len("[providers.") : -1]
+    start = next(index for index, line in enumerate(lines) if line.strip() == header)
+    end = start + 1
+    while end < len(lines):
+        stripped = lines[end].strip()
+        if stripped.startswith("["):
+            inner = stripped.lstrip("[")
+            if not inner.startswith(f"providers.{name}.") and not inner.startswith(
+                f"providers.{name}]"
+            ):
+                break
+        end += 1
+
+    body = block.rstrip("\n").splitlines()
+    trailing = lines[end] if end < len(lines) else None
+    lines[start:end] = body
+    if trailing is not None and trailing.strip():
+        lines.insert(start + len(body), "")
+    return "\n".join(lines) + "\n"
+
+
 def get_provider_value(text: str, name: str) -> str:
     lines = text.splitlines()
     bounds = section_bounds(lines, f"[providers.{name}]")
@@ -186,11 +217,20 @@ def main() -> int:
         print(f"usage: {sys.argv[0]} <config.toml> <provider-block.toml> <picker-entry>", file=sys.stderr)
         return 2
 
+    replace = False
+    if argv[0] == "--set":
+        replace = True
+        argv = argv[1:]
+        if len(argv) < 3:
+            print(f"usage: {sys.argv[0]} --set <config.toml> <provider-block.toml> <picker-entry>", file=sys.stderr)
+            return 2
+
     config = pathlib.Path(argv[0])
     block = pathlib.Path(argv[1]).read_text(encoding="utf-8")
     entry = argv[2]
     text = config.read_text(encoding="utf-8") if config.exists() else ""
-    updated = add_picker_entry(add_provider_block(text, block), entry)
+    write_block = set_provider_block if replace else add_provider_block
+    updated = add_picker_entry(write_block(text, block), entry)
     config.write_text(updated, encoding="utf-8")
     return 0
 

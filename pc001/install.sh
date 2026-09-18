@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Installeer de PC001-koppeling voor jcode op deze machine. Idempotent:
 # bouwen, publiceren naar ~/.jcode/builds/current, de Doppler-launcher
-# installeren, [websearch] engine = "exa" zetten en het
-# [providers.huggingface-cerebras]-profiel toevoegen.
+# installeren, [websearch] engine = "exa" zetten, de providerprofielen uit
+# pc001/providers/ in de config zetten en de picker begrenzen op de modellen
+# uit pc001/model-picker-models.txt (de `enabledModels` van omp).
 #
 # Gebruik:
 #   pc001/install.sh                 # bouwen + publiceren + wrapper + config + verify
@@ -79,25 +80,42 @@ install -d "${bin_dir}"
 install -m 0755 "${here}/jcode-launcher" "${bin_dir}/jcode"
 
 config="${jcode_home}/config.toml"
-provider_block="${here}/providers/huggingface-cerebras.toml"
-provider_entry='openai-compatible:huggingface-cerebras'
 
 if [[ -f "${config}" ]]; then
-  backup="${config}.bak-exa-$(date -u +%Y%m%dT%H%M%SZ)"
+  backup="${config}.bak-model-picker-$(date -u +%Y%m%dT%H%M%SZ)"
   cp -p "${config}" "${backup}"
-  log "config: engine = exa + provider huggingface-cerebras in ${config} (backup ${backup##*/})"
+  log "config: engine, providerprofielen en pickerlijsten in ${config} (backup ${backup##*/})"
 else
-  log "config: ${config} aanmaken met [websearch] engine = exa en [providers.huggingface-cerebras]"
+  log "config: ${config} aanmaken met [websearch] engine = exa en de providerprofielen"
 fi
 python3 "${here}/config-set-engine.py" "${config}" exa '"bing"'
-python3 "${here}/config-add-provider.py" "${config}" "${provider_block}" "${provider_entry}"
+# Elk profielbestand in pc001/providers/ is de bron van waarheid voor dat blok:
+# --set vervangt een bestaand blok (inclusief zijn [[...models]]-subtables),
+# zodat de modellijst in de config altijd gelijk is aan het bestand.
+for block in "${here}"/providers/*.toml; do
+  profile="$(basename "${block}" .toml)"
+  python3 "${here}/config-add-provider.py" --set "${config}" "${block}" "${profile}"
+done
+python3 "${here}/config-set-model-picker.py" \
+  "${config}" "${here}/model-picker-providers.txt" "${here}/model-picker-models.txt"
+
+# De native Cerebras-provider is een ingebouwde jcode-profiel zonder statische
+# modellen: zonder cataloguscache toont de picker alleen zijn default_model.
+# Deze aanroep haalt /v1/models op en legt die cache aan, waarna de picker
+# hetzelfde tweetal toont als omp.
+if [[ -x "${bin_dir}/jcode" ]]; then
+  log "Cerebras-catalogus opwarmen"
+  "${bin_dir}/jcode" model list -p cerebras >/dev/null
+fi
 
 log "geïnstalleerd: ${dest}"
 printf 'versie: %s\n' "${label}"
 printf 'engine: %s\n' "$(python3 "${here}/config-set-engine.py" --get "${config}")"
-printf 'provider: %s (default_model %s)\n' \
-  "$(python3 "${here}/config-add-provider.py" --get-picker "${config}" "${provider_entry}")" \
-  "$(python3 "${here}/config-add-provider.py" --get "${config}" huggingface-cerebras)"
+printf 'profielen: %s\n' "$(cd "${here}/providers" && printf '%s ' *.toml)"
+printf 'pickerproviders: %s\n' \
+  "$(python3 "${here}/config-set-model-picker.py" --get "${config}" model_picker_providers | tr '\n' ' ')"
+printf 'pickermodellen: %s\n' \
+  "$(python3 "${here}/config-set-model-picker.py" --get "${config}" model_picker_models | wc -l)"
 
 if (( VERIFY )); then
   log "verificatie"

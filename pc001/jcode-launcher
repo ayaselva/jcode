@@ -5,11 +5,25 @@
 # *runtime* from the shared helpers and only ever live in the process
 # environment:
 #
-#   EXA_API_KEY         websearch via `exa-cli print-key` (environment first,
-#                       otherwise the Doppler `infra/all` secret, 15-min cache).
-#   CEREBRAS_API_KEY    Hugging Face router routed over Cerebras, via
-#                       `huggingface-cerebras-api-key` (Doppler `infra/all`,
-#                       shape-checked as an `hf_*` token).
+#   EXA_API_KEY                  websearch via `exa-cli print-key` (environment
+#                                first, otherwise the Doppler `infra/all`
+#                                secret, 15-min cache).
+#   CEREBRAS_API_KEY             native Cerebras-provider (api.cerebras.ai),
+#                                via `cerebras-api-key` (Doppler `infra/all`,
+#                                shape-checked as a `csk-*` key).
+#   HUGGINGFACE_CEREBRAS_API_KEY Hugging Face Inference Router over Cerebras
+#                                (router.huggingface.co), via
+#                                `huggingface-cerebras-api-key` (Doppler
+#                                `infra/all`, shape-checked as an `hf_*` token).
+#   MODAL_RENT_API_KEY           endpoint key of the rented Modal-B200 server
+#                                (rent-server), via `modal-rent-api-key`
+#                                (Doppler `infra/all`).
+#   DATABRICKS_TRIAL_TOKEN       Databricks Foundation Model APIs, via
+#                                `databricks-api-key` (Doppler `infra/all`).
+#
+# The two Cerebras keys must stay separate: the native provider and the Hugging
+# Face router are different endpoints with different credentials, and jcode
+# reads each profile's key from its own `api_key_env`.
 #
 # A key is never written to a file, a commit, a log or the command line.
 #
@@ -30,21 +44,23 @@ case "$first" in
     ;;
 esac
 
-if [[ -z "${EXA_API_KEY:-}" ]] && command -v exa-cli >/dev/null 2>&1; then
-  # `exa-cli print-key` prints the raw key on stdout for command substitution.
-  if key="$(exa-cli print-key 2>/dev/null)" && [[ -n "$key" ]]; then
-    export EXA_API_KEY="$key"
+# resolve_key <env-var> <helper> [args...]: export the helper's key only when
+# the variable is not already set and the helper produced a value.
+resolve_key() {
+  local var="$1" helper="$2" key
+  shift 2
+  if [[ -n "${!var:-}" ]] || ! command -v "$helper" >/dev/null 2>&1; then
+    return 0
   fi
-  unset key
-fi
+  if key="$("$helper" "$@" 2>/dev/null)" && [[ -n "$key" ]]; then
+    export "$var=$key"
+  fi
+}
 
-if [[ -z "${CEREBRAS_API_KEY:-}" ]] && command -v huggingface-cerebras-api-key >/dev/null 2>&1; then
-  # The helper prints the raw Hugging Face token on stdout, or exits non-zero
-  # when Doppler has no valid token.
-  if key="$(huggingface-cerebras-api-key 2>/dev/null)" && [[ -n "$key" ]]; then
-    export CEREBRAS_API_KEY="$key"
-  fi
-  unset key
-fi
+resolve_key EXA_API_KEY exa-cli print-key
+resolve_key CEREBRAS_API_KEY cerebras-api-key
+resolve_key HUGGINGFACE_CEREBRAS_API_KEY huggingface-cerebras-api-key
+resolve_key MODAL_RENT_API_KEY modal-rent-api-key
+resolve_key DATABRICKS_TRIAL_TOKEN databricks-api-key
 
 exec "$REAL_BIN" "$@"
