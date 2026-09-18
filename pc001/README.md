@@ -71,10 +71,10 @@ sleutels in het procesmilieu:
 | Variabele | Helper |
 |---|---|
 | `EXA_API_KEY` | `exa-cli print-key` — omgeving, anders Doppler `infra/all` (15 min cache) |
-| `CEREBRAS_API_KEY` | `cerebras-api-key` — native Cerebras (`api.cerebras.ai`), vormcontrole `csk-*` |
-| `HUGGINGFACE_CEREBRAS_API_KEY` | `huggingface-cerebras-api-key` — Hugging Face-router, vormcontrole `hf_*` |
+| `CEREBRAS_API_KEY` | `cerebras-api-key` — Doppler-secret `CEREBRAS_API_KEY`, native Cerebras (`api.cerebras.ai`), vormcontrole `csk-*` |
+| `HUGGINGFACE_CEREBRAS_API_KEY` | `huggingface-cerebras-api-key` — Doppler-secret `HF_TOKEN`, Hugging Face-router, vormcontrole `hf_*` |
 | `MODAL_RENT_API_KEY` | `modal-rent-api-key` — gehuurde Modal-B200-server (`rent-server`) |
-| `DATABRICKS_TRIAL_TOKEN` | `databricks-api-key` — Databricks Foundation Model APIs, vormcontrole `dapi*` |
+| `DATABRICKS_TRIAL_TOKEN` | `databricks-api-key` — Doppler-secret `DATABRICKS_TRIAL_TOKEN`, Databricks Foundation Model APIs, vormcontrole `dapi*` |
 
 De twee Cerebras-sleutels staan bewust apart: de native provider
 (`api.cerebras.ai`, `api_key_env = CEREBRAS_API_KEY`) en de Hugging Face-router
@@ -82,9 +82,19 @@ De twee Cerebras-sleutels staan bewust apart: de native provider
 verschillende endpoints met verschillende credentials. Eén gedeelde
 `CEREBRAS_API_KEY` stuurde de Hugging Face-token naar de native provider.
 
+De helpers komen uit `/data/projects/omp-agent/` (zie `setup.sh` daar); hun
+Doppler-secretnamen zijn op 18-09-2026 bijgesteld naar de herordening
+(`HF_TOKEN` voor de Hugging Face-token, `CEREBRAS_API_KEY` voor de native
+Cerebras-sleutel; daarvoor `CEREBRAS_API_KEY` respectievelijk `CEREBRAS`).
+
 De binary leest deze variabelen (of een opgeslagen sleutel in
 `~/.jcode/<profiel>.env`). Omdat de omgeving vóór het env-bestand gaat, wint de
 runtime-helper altijd van een achtergebleven oude sleutel in dat bestand.
+
+Eén inhoudelijk verschil met omp blijft: omp laat `cerebras/*` bij een 402-quota
+automatisch terugvallen op de Hugging Face-tweeling (`retry.fallbackChains`);
+jcode kent zo'n keten niet, dus kies daar dan zelf `huggingface-cerebras/…`. Het
+account geeft op beide native modellen `402 payment_required_error param=quota`.
 
 ## Scripts
 
