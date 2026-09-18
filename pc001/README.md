@@ -32,23 +32,22 @@ in de jcode-broncode zelf:
 ## Kiesbare modellen
 
 * `[provider] model_picker_models` begrenst `/model` én `jcode model list` tot
-  de opgegeven modellen. Een regel is een kale modelnaam (`gpt-oss-120b`) of een
-  provider-scoped paar (`cerebras/gpt-oss-120b`,
-  `openrouter-curated/google/gemini-3.8-flash`); het providerdeel matcht een
-  providerlabel, een api-methode of een providerprofiel-id, hoofdletter- en
-  vormongevoelig. Routes van het actieve model blijven altijd zichtbaar en een
-  lijst zonder enkele match valt terug op de ongefilterde routes, zodat de
-  picker nooit leeg wordt.
+  de opgegeven modellen. Een regel is een modelnaam precies zoals de picker die
+  toont (`gpt-oss-120b`, `openai/gpt-oss-120b`, `Qwen/Qwen3.8-27B:cerebras`); de
+  hele naam wordt hoofdletterongevoelig vergeleken, dus een naam met een `/` of
+  `:` erin wordt nooit als providerprefix gelezen. Providers begrens je met
+  `model_picker_providers`. Routes van het actieve model blijven altijd
+  zichtbaar en een lijst zonder enkele match valt terug op de ongefilterde
+  routes, zodat de picker nooit leeg wordt.
 * `pc001/model-picker-models.txt` is de bron van waarheid voor die lijst: de 24
-  modellen van omp (`enabledModels`), als kale modelnaam. Provider-scoped regels
-  werken in een lokale picker wel, maar niet in de normale TUI: die praat met
-  een remote server en die remote catalogus labelt elke route met het profiel
-  van het actieve model (`remote-catalog`), waardoor het providerdeel geen
-  onderscheid meer maakt. De 24 namen zijn onderling uniek, dus de kale vorm
-  selecteert in beide modi dezelfde set.
-  `pc001/model-picker-providers.txt` zet `[provider] model_picker_providers` op
-  precies de providers van die modellen, zodat de providerfilter in een lokale
-  picker geen routes wegneemt die er juist wel in horen.
+  modellen van omp (`enabledModels`), als modelnaam. Provider-scoped regels
+  bestaan bewust niet: de normale TUI praat met een remote server en die remote
+  catalogus labelt elke route met het profiel van het actieve model
+  (`remote-catalog`), en namen als `openai/gpt-oss-120b` zijn zelf modelnamen in
+  plaats van provider/model-paren. `pc001/model-picker-providers.txt` zet
+  `[provider] model_picker_providers` op precies de providers van die modellen,
+  zodat de providerfilter in een lokale picker geen routes wegneemt die er juist
+  wel in horen.
 * De modellen komen per provider uit een profiel in `pc001/providers/*.toml`:
   `openrouter-curated` (15 modellen), `cheaperinference` (1),
   `huggingface-cerebras` (2), `modal-rent-b200` (1) en `databricks` (1). Elk

@@ -204,12 +204,15 @@ extra: []
 ```
 
 De pickerrrijen komen binnen als `api_method: "remote-catalog"` met het profiel
-van het actieve model als providerlabel: in deze remote modus maakt het
-providerdeel van een allowlist-regel dus geen onderscheid. Daarom staat
-`model-picker-models.txt` op kale modelnamen (die zijn onderling uniek); met
-provider-scoped regels zakte de picker hier naar de 15 openrouter-modellen.
+van het actieve model als providerlabel. Een allowlist-regel is daarom een hele
+modelnaam, nooit een provider/model-paar: namen als `openai/gpt-oss-120b` zijn
+zelf modelnamen, en een providerprefix zou in deze modus geen onderscheid maken.
+Met provider-scoped regels (de eerste opzet) zakte de picker hier naar de 15
+openrouter-modellen, en nadat de sleutelherordening meer providers actief maakte
+kwamen er juist twee vreemde modellen bij (`gpt-5.6-luna`, `deepseek-v4-flash`)
+doordat zo'n regel na normalisatie ook de native route van die provider raakte.
 Ter controle: met een lege `model_picker_models` toonde dezelfde picker 423
-modellen, en met de kale lijst exact de 24 hierboven.
+modellen, en met de namenlijst exact de 24 hierboven.
 
 ✅ jcode gebruikt Exa, de Hugging Face/Cerebras-provider werkt met de sleutel uit
 Doppler, zonder sleutel volgt een expliciete foutmelding en de picker — CLI én

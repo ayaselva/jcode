@@ -386,13 +386,13 @@ cross_provider_failover = "countdown"
 # stay visible. Unset or empty = show everything.
 # model_picker_providers = ["myprofile", "openrouter"]
 # Only list these models in the /model picker and `jcode model list`. Entries
-# are either a bare model id ("gpt-oss-120b") or a provider-scoped
-# "provider/model" pair ("cerebras/gpt-oss-120b",
-# "openrouter-curated/google/gemini-3.8-flash"), where the provider part
-# matches a provider label, a route api method, or an openai-compatible profile
-# id. The active model's routes always stay visible. Unset or empty = show
-# everything.
-# model_picker_models = ["cerebras/gpt-oss-120b", "openrouter-curated/google/gemini-3.8-flash"]
+# are model names exactly as the picker shows them ("gpt-oss-120b",
+# "openai/gpt-oss-120b", "Qwen/Qwen3.8-27B:cerebras"); the whole name is
+# compared case-insensitively, so model names that contain "/" or ":" are not
+# mistaken for a provider prefix. Narrow the providers with
+# model_picker_providers. The active model's routes always stay visible. Unset
+# or empty = show everything.
+# model_picker_models = ["gpt-oss-120b", "openai/gpt-oss-120b"]
 # Max seconds to wait for streaming data before timing out a request with no
 # data received. Raise this for slow reasoning models (e.g. DeepSeek) that think
 # silently for minutes before emitting tokens. Default: 180.
